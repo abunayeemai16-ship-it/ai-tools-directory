@@ -1,0 +1,77 @@
+@import "tailwindcss";
+
+:root {
+  --ink: #08090d;
+  --ink-2: #0e1016;
+  --surface: #12141c;
+  --surface-2: #181b26;
+  --line: #272b38;
+  --muted: #8b92a5;
+  --text: #f3f4f6;
+  --accent: #ffb020;
+  --accent-2: #ffd56a;
+  --mint: #3ee0a8;
+  --rose: #ff6b7a;
+  --blue: #6ea8ff;
+}
+
+@theme inline {
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-line: var(--line);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-accent-2: var(--accent-2);
+  --color-mint: var(--mint);
+  --color-rose: var(--rose);
+  --color-blue: var(--blue);
+  --font-sans: var(--font-geist-sans);
+  --font-serif: var(--font-instrument);
+  --font-mono: var(--font-geist-mono);
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background: var(--ink);
+  color: var(--text);
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+}
+
+::selection {
+  background: rgba(255, 176, 32, 0.28);
+  color: #fff;
+}
+
+.noise {
+  position: relative;
+}
+
+.noise::before {
+  content: "";
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  opacity: 0.035;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 160 160' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.8' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  mix-blend-mode: overlay;
+}
+
+.hero-glow {
+  background:
+    radial-gradient(900px 420px at 18% -10%, rgba(255, 176, 32, 0.16), transparent 55%),
+    radial-gradient(700px 380px at 92% 0%, rgba(62, 224, 168, 0.1), transparent 50%),
+    radial-gradient(600px 300px at 50% 20%, rgba(110, 168, 255, 0.08), transparent 50%);
+}
+
+.grid-fade {
+  background-image:
+    linear-gradient(to right, rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: radial-gradient(ellipse at center, black 30%, transparent 75%);
+}
