@@ -126,29 +126,39 @@ async function persistCatalog() {
   if (!memory) return;
   const snap = catalogSnapshot(memory);
   if (snap === lastCatalogSnap) return;
-  if (usesPostgres()) {
-    const { savePostgresCatalog } = await postgresStore();
-    await savePostgresCatalog(JSON.parse(snap) as Record<string, unknown>);
+  try {
+    if (usesPostgres()) {
+      const { savePostgresCatalog } = await postgresStore();
+      await savePostgresCatalog(JSON.parse(snap) as Record<string, unknown>);
+      lastCatalogSnap = snap;
+      return;
+    }
+    lastCatalogSnap = await writeIfChanged(DB_PATH, snap, lastCatalogSnap);
+  } catch (error) {
+    console.error("[forge] persistCatalog failed", error);
     lastCatalogSnap = snap;
-    return;
   }
-  lastCatalogSnap = await writeIfChanged(DB_PATH, snap, lastCatalogSnap);
 }
 
 async function persistAnalytics() {
   if (!memory) return;
   const snap = analyticsSnapshot(memory);
   if (snap === lastAnalyticsSnap) return;
-  if (usesPostgres()) {
-    const { savePostgresAnalytics } = await postgresStore();
-    await savePostgresAnalytics({
-      sessions: memory.sessions,
-      pageviews: memory.pageviews,
-    });
+  try {
+    if (usesPostgres()) {
+      const { savePostgresAnalytics } = await postgresStore();
+      await savePostgresAnalytics({
+        sessions: memory.sessions,
+        pageviews: memory.pageviews,
+      });
+      lastAnalyticsSnap = snap;
+      return;
+    }
+    lastAnalyticsSnap = await writeIfChanged(ANALYTICS_PATH, snap, lastAnalyticsSnap);
+  } catch (error) {
+    console.error("[forge] persistAnalytics failed", error);
     lastAnalyticsSnap = snap;
-    return;
   }
-  lastAnalyticsSnap = await writeIfChanged(ANALYTICS_PATH, snap, lastAnalyticsSnap);
 }
 
 function scheduleFlush() {
@@ -634,12 +644,25 @@ async function hydrateFromRaw(raw: Partial<Database> | null) {
 
 async function readFileDb(): Promise<Database> {
   if (usesPostgres()) {
-    const { loadPostgresStore } = await postgresStore();
-    const raw = await loadPostgresStore();
-    const { db, dirty } = await hydrateFromRaw(raw);
-    lastCatalogSnap = dirty ? "" : catalogSnapshot(db);
-    lastAnalyticsSnap = analyticsSnapshot(db);
-    return db;
+    try {
+      const { loadPostgresStore } = await postgresStore();
+      const raw = await Promise.race([
+        loadPostgresStore(),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("Postgres catalog load timed out")), 4_000),
+        ),
+      ]);
+      const { db } = await hydrateFromRaw(raw);
+      lastCatalogSnap = catalogSnapshot(db);
+      lastAnalyticsSnap = analyticsSnapshot(db);
+      return db;
+    } catch (error) {
+      console.error("[forge] Postgres catalog load failed, using bundled snapshot", error);
+      const db = emptyDb();
+      lastCatalogSnap = catalogSnapshot(db);
+      lastAnalyticsSnap = analyticsSnapshot(db);
+      return db;
+    }
   }
   try {
     const text = await readFile(DB_PATH, "utf8");
@@ -680,7 +703,7 @@ async function ensureMemory() {
     memoryLoadedAt = performance.now();
   }
   const dirty = await applyRuntimeDefaults(memory);
-  if (dirty || lastCatalogSnap === "") await persistCatalog();
+  if (dirty && !process.env.VERCEL) await persistCatalog();
   return memory;
 }
 

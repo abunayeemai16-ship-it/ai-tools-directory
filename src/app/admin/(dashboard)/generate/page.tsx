@@ -18,9 +18,9 @@ export const metadata: Metadata = {
 export default async function GeneratePage() {
   await live();
   const [categories, tools, geminiReady] = await Promise.all([
-    listCategories(),
-    listAllTools(),
-    hasUsableGeminiKey(),
+    listCategories().catch(() => []),
+    listAllTools().catch(() => []),
+    hasUsableGeminiKey().catch(() => false),
   ]);
   const remaining = remainingCatalogEntries(tools);
   const remainingByCategory = Object.fromEntries(

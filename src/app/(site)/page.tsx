@@ -26,25 +26,32 @@ export const instant = false;
 
 export async function generateMetadata(): Promise<Metadata> {
   await live();
-  const db = await readDb();
-  return {
-    title: { absolute: db.settings.homeSeoTitle },
-    description: db.settings.homeSeoDescription,
-    openGraph: {
-      title: db.settings.homeSeoTitle,
+  try {
+    const db = await readDb();
+    return {
+      title: { absolute: db.settings.homeSeoTitle },
       description: db.settings.homeSeoDescription,
-      type: "website",
-    },
-  };
+      openGraph: {
+        title: db.settings.homeSeoTitle,
+        description: db.settings.homeSeoDescription,
+        type: "website",
+      },
+    };
+  } catch {
+    return {
+      title: { absolute: "Forge — AI Tools Directory" },
+      description: "Independent AI tools reviews.",
+    };
+  }
 }
 
 export default async function HomePage() {
   await live();
   const [tools, featured, categories, ads] = await Promise.all([
-    listTools(),
-    getFeaturedTools(),
-    listCategories(),
-    listAds(),
+    listTools().catch(() => []),
+    getFeaturedTools().catch(() => []),
+    listCategories().catch(() => []),
+    listAds().catch(() => []),
   ]);
 
   return (
