@@ -18,8 +18,16 @@ export function AdminLoginForm() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ password }),
       });
-      const payload = (await res.json()) as { error?: string };
-      if (!res.ok) throw new Error(payload.error || "Login failed");
+      const text = await res.text();
+      let payload: { error?: string; ok?: boolean } = {};
+      if (text) {
+        try {
+          payload = JSON.parse(text) as { error?: string; ok?: boolean };
+        } catch {
+          throw new Error("Login failed. The server did not return JSON.");
+        }
+      }
+      if (!res.ok) throw new Error(payload.error || "Incorrect password");
       window.location.assign("/admin");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");

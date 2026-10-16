@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
-import { logoutAdmin } from "@/lib/admin-auth";
+import { ADMIN_COOKIE } from "@/lib/crypto-auth";
+import { adminCookieOptions } from "@/lib/admin-auth";
 
 export async function POST() {
-  await logoutAdmin();
-  return NextResponse.json({ ok: true });
+  const response = NextResponse.json({ ok: true });
+  response.cookies.set(ADMIN_COOKIE, "", { ...adminCookieOptions(), maxAge: 0 });
+  return response;
 }
