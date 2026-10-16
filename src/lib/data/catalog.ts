@@ -1,26 +1,27 @@
 import { CORE_CATALOG } from "@/lib/data/catalog-core";
 import { EXTENDED_CATALOG } from "@/lib/data/catalog-extended";
+import { generatedCatalogEntries } from "@/lib/data/catalog-generated";
 import type { CatalogEntry, CatalogProgress } from "@/lib/data/catalog-types";
 import { catalogSlug, leanToEntry } from "@/lib/data/expand-catalog";
 import type { Tool } from "@/lib/types";
 
-export const CATALOG_CAP = 500;
+export const CATALOG_CAP = 5000;
 
 export function allCatalogEntries(): CatalogEntry[] {
   const seen = new Set<string>();
   const out: CatalogEntry[] = [];
-  for (const entry of CORE_CATALOG) {
+  const push = (entry: CatalogEntry) => {
     const slug = catalogSlug(entry);
-    if (seen.has(slug)) continue;
+    const nameKey = entry.name.trim().toLowerCase();
+    if (!slug || seen.has(slug) || seen.has(nameKey)) return;
     seen.add(slug);
+    seen.add(nameKey);
     out.push(entry);
-  }
-  for (const row of EXTENDED_CATALOG) {
-    const entry = leanToEntry(row);
-    const slug = catalogSlug(entry);
-    if (seen.has(slug)) continue;
-    seen.add(slug);
-    out.push(entry);
+  };
+  for (const entry of CORE_CATALOG) push(entry);
+  for (const row of EXTENDED_CATALOG) push(leanToEntry(row));
+  if (out.length < CATALOG_CAP) {
+    out.push(...generatedCatalogEntries(CATALOG_CAP - out.length, seen));
   }
   return out;
 }

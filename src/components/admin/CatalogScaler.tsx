@@ -90,18 +90,41 @@ export function CatalogScaler({
     setBusy(batch);
     setError("");
     setNotice("");
+    const looping = batch >= 500;
+    let addedTotal = 0;
+    let geminiUsed = 0;
+    let libraryUsed = 0;
     try {
-      const res = await fetch("/api/admin/catalog-scale", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ category, batch, status }),
-      });
-      const payload = (await res.json()) as ScaleResponse;
-      if (!res.ok) throw new Error(payload.error || "Scale failed");
-      if (payload.progress) setProgress(payload.progress);
-      if (payload.added?.length) setLog((prev) => [...payload.added!, ...prev].slice(0, 80));
+      for (let round = 0; round < 90; round += 1) {
+        const res = await fetch("/api/admin/catalog-scale", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ category, batch, status }),
+        });
+        const payload = (await res.json()) as ScaleResponse;
+        if (!res.ok) throw new Error(payload.error || "Scale failed");
+        if (payload.progress) setProgress(payload.progress);
+        if (payload.added?.length) setLog((prev) => [...payload.added!, ...prev].slice(0, 80));
+        addedTotal += payload.count ?? payload.added?.length ?? 0;
+        geminiUsed += payload.geminiUsed ?? 0;
+        libraryUsed += payload.libraryUsed ?? 0;
+        const remaining =
+          category === "all"
+            ? payload.progress?.remaining ?? 0
+            : remainingByCategory[category] ?? payload.progress?.remaining ?? 0;
+        const atCap =
+          (payload.progress?.inDatabase ?? 0) >= (payload.progress?.cap ?? 5000);
+        if (payload.progress) {
+          setNotice(
+            `Added ${addedTotal} so far · ${payload.progress.inDatabase}/${payload.progress.cap} in db.`,
+          );
+        }
+        if (!looping) break;
+        if (!payload.count) break;
+        if (atCap || remaining === 0) break;
+      }
       setNotice(
-        `${payload.message || "Done"} Library expander: ${payload.libraryUsed || 0}. Gemini: ${payload.geminiUsed || 0}.`,
+        `Added ${addedTotal} tool${addedTotal === 1 ? "" : "s"}. Library expander: ${libraryUsed}. Gemini: ${geminiUsed}.`,
       );
       await refresh();
     } catch (err) {
@@ -117,7 +140,7 @@ export function CatalogScaler({
         <div>
           <h2 className="flex items-center gap-2 font-medium">
             <Layers className="h-4 w-4 text-accent" />
-            500-Tool Catalog Scaler
+            5000-Tool Catalog Scaler
           </h2>
           <p className="mt-1 max-w-2xl text-sm text-muted">
             Pulls the next unused products from a curated library of real AI/SaaS tools.
@@ -161,7 +184,7 @@ export function CatalogScaler({
         </label>
         <div className="flex items-end text-xs text-muted">
           {geminiReady
-            ? "+25 will try Gemini 2.5 Flash with library fallback. +50 and Scale to 500 use the curated expander so a 500-tool run finishes in one click."
+            ? "+25 will try Gemini 2.5 Flash with library fallback. Larger batches use the library expander and keep going until the 5000-tool cap."
             : "No Gemini key active — batches use the curated library expander (still real products, complete SEO fields)."}
         </div>
       </div>
@@ -170,7 +193,8 @@ export function CatalogScaler({
         {[
           { n: 25, label: "+ Add Next 25 Real Tools" },
           { n: 50, label: "+ Add Next 50 Real Tools" },
-          { n: 500, label: "Scale to 500 Tools" },
+          { n: 500, label: "+ Add Next 500 Tools" },
+          { n: 5000, label: "Scale to 5000 Tools" },
         ].map((item) => (
           <button
             key={item.n}

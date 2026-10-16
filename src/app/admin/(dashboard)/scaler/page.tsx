@@ -29,10 +29,10 @@ export default async function ScalerPage() {
     <div className="space-y-6">
       <div>
         <p className="text-xs uppercase tracking-[0.18em] text-muted">Catalog</p>
-        <h1 className="mt-1 font-serif text-3xl">500-Tool Catalog Scaler</h1>
+        <h1 className="mt-1 font-serif text-3xl">5000-Tool Catalog Scaler</h1>
         <p className="mt-2 max-w-2xl text-sm text-muted">
-          Seed the next 25, 50, or remaining tools up to 500 from a curated library of
-          real products. Choose Ready Drafts or publish live.
+          Seed the next 25, 50, 500, or remaining tools up to 5000 from the product
+          library. Choose Ready Drafts or publish live.
         </p>
       </div>
       <CatalogScaler

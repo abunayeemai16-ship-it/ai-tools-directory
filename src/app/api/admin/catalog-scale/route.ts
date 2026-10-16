@@ -13,7 +13,8 @@ import type { PublishStatus, Tool } from "@/lib/types";
 
 export const maxDuration = 300;
 
-const BATCHES = new Set([25, 50, 500]);
+const BATCHES = new Set([25, 50, 500, 5000]);
+const CHUNK = 60;
 
 export async function GET() {
   const denied = await requireAdminApi();
@@ -55,7 +56,7 @@ export async function POST(request: Request) {
 
   const batch = Number(body.batch);
   if (!BATCHES.has(batch)) {
-    return NextResponse.json({ error: "Batch must be 25, 50, or 500." }, { status: 400 });
+    return NextResponse.json({ error: "Batch must be 25, 50, 500, or 5000." }, { status: 400 });
   }
   const status: PublishStatus = body.status === "published" ? "published" : "draft";
   const category = body.category?.trim() || "all";
@@ -74,7 +75,8 @@ export async function POST(request: Request) {
   }
 
   const queue = remainingCatalogEntries(tools, category === "all" ? undefined : category);
-  const take = Math.min(batch === 500 ? room : batch, queue.length, room);
+  const chunk = batch <= 50 ? batch : CHUNK;
+  const take = Math.min(chunk, queue.length, room);
   const slice = queue.slice(0, take);
   const useGemini = batch <= 25 && (await hasUsableGeminiKey());
 

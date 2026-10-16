@@ -20,7 +20,7 @@ export type CatalogEntry = {
   core?: boolean;
 };
 
-/** Lean row used by the 500-tool scaler library. */
+/** Lean row used by the scaler library. */
 export type CatalogLean = [
   name: string,
   website: string,
