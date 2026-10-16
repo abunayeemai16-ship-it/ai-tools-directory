@@ -59,13 +59,23 @@ export function campaignFromTool(
   };
 }
 
+/** Strips buyer contact and payment references before an ad is sent to the browser. */
+export function publicAd(ad: AdCampaign): AdCampaign {
+  const copy: AdCampaign = { ...ad, commissionOrFeeNote: "" };
+  delete copy.paymentRef;
+  delete copy.contactEmail;
+  return copy;
+}
+
 export function liveAds(ads: AdCampaign[], placement?: AdPlacement, category?: string) {
-  return ads.filter((ad) => {
-    if (!isAdLive(ad)) return false;
-    if (placement && ad.placement !== placement) return false;
-    if (placement === "category_sponsor" && category && ad.targetCategory !== category) {
-      return false;
-    }
-    return true;
-  });
+  return ads
+    .filter((ad) => {
+      if (!isAdLive(ad)) return false;
+      if (placement && ad.placement !== placement) return false;
+      if (placement === "category_sponsor" && category && ad.targetCategory !== category) {
+        return false;
+      }
+      return true;
+    })
+    .map(publicAd);
 }

@@ -34,6 +34,9 @@ export function Footer() {
             <Link href="/submit" className="hover:text-accent">
               Submit a tool
             </Link>
+            <Link href="/advertise" className="hover:text-accent">
+              Advertise
+            </Link>
           </div>
         </div>
         <div>

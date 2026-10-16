@@ -1,12 +1,11 @@
 "use client";
 
+import Link from "next/link";
 import { CheckCircle2, Sparkles } from "lucide-react";
 import { useState } from "react";
-import type { DirectoryCategory, ListingTier, PricingModel } from "@/lib/types";
-import { cn } from "@/lib/utils";
+import type { DirectoryCategory, PricingModel } from "@/lib/types";
 
 export function SubmitForm({ categories }: { categories: DirectoryCategory[] }) {
-  const [tier, setTier] = useState<ListingTier>("free");
   const [status, setStatus] = useState<"idle" | "saving" | "done" | "error">("idle");
   const [message, setMessage] = useState("");
 
@@ -26,15 +25,11 @@ export function SubmitForm({ categories }: { categories: DirectoryCategory[] }) 
           pitch: form.get("pitch"),
           pricingModel: form.get("pricingModel") as PricingModel,
           email: form.get("email"),
-          tier,
+          tier: "free",
         }),
       });
       if (!res.ok) throw new Error("Request failed");
-      setMessage(
-        tier === "featured"
-          ? "Featured listing queued. We will email invoice details for the $49 boost."
-          : "Submitted. Reviews typically take 2–4 business days.",
-      );
+      setMessage("Submitted. Reviews typically take 2–4 business days.");
       setStatus("done");
     } catch {
       setStatus("error");
@@ -62,34 +57,23 @@ export function SubmitForm({ categories }: { categories: DirectoryCategory[] }) 
   return (
     <form onSubmit={onSubmit} className="space-y-6">
       <div className="grid gap-3 sm:grid-cols-2">
-        <button
-          type="button"
-          onClick={() => setTier("free")}
-          className={cn(
-            "rounded-2xl border p-5 text-left transition",
-            tier === "free" ? "border-accent bg-accent/10" : "border-line bg-surface",
-          )}
-        >
+        <div className="rounded-2xl border border-accent bg-accent/10 p-5 text-left">
           <p className="text-sm text-muted">Standard listing</p>
           <p className="mt-1 font-serif text-2xl">Free</p>
           <p className="mt-2 text-sm text-muted">Editorial review. Appears if approved.</p>
-        </button>
-        <button
-          type="button"
-          onClick={() => setTier("featured")}
-          className={cn(
-            "rounded-2xl border p-5 text-left transition",
-            tier === "featured" ? "border-accent bg-accent/10" : "border-line bg-surface",
-          )}
+        </div>
+        <Link
+          href="/advertise"
+          className="rounded-2xl border border-line bg-surface p-5 text-left transition hover:border-accent/60"
         >
           <p className="inline-flex items-center gap-1 text-sm text-accent">
-            <Sparkles className="h-3.5 w-3.5" /> Featured
+            <Sparkles className="h-3.5 w-3.5" /> Want homepage visibility?
           </p>
-          <p className="mt-1 font-serif text-2xl">$49</p>
+          <p className="mt-1 font-serif text-2xl">Advertise</p>
           <p className="mt-2 text-sm text-muted">
-            Homepage badge, comparison priority, 30-day deal slot.
+            Book the exclusive sponsored slot on the homepage. See packages →
           </p>
-        </button>
+        </Link>
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2">
@@ -143,11 +127,7 @@ export function SubmitForm({ categories }: { categories: DirectoryCategory[] }) 
         disabled={status === "saving"}
         className="rounded-full bg-accent px-5 py-2.5 text-sm font-semibold text-ink hover:bg-accent-2 disabled:opacity-60"
       >
-        {status === "saving"
-          ? "Submitting…"
-          : tier === "featured"
-            ? "Submit featured listing · $49"
-            : "Submit for free listing"}
+        {status === "saving" ? "Submitting…" : "Submit for free listing"}
       </button>
     </form>
   );

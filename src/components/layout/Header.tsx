@@ -57,6 +57,17 @@ export function Header() {
 
         <div className="flex items-center gap-2">
           <Link
+            href="/advertise"
+            className={cn(
+              "hidden rounded-full border px-4 py-2 text-sm font-medium transition sm:inline-flex",
+              pathname.startsWith("/advertise")
+                ? "border-accent text-accent"
+                : "border-line text-white hover:border-accent/60 hover:text-accent",
+            )}
+          >
+            Advertise
+          </Link>
+          <Link
             href="/submit"
             className="hidden rounded-full bg-accent px-4 py-2 text-sm font-medium text-ink transition hover:bg-accent-2 sm:inline-flex"
           >
@@ -86,6 +97,13 @@ export function Header() {
                 {link.label}
               </Link>
             ))}
+            <Link
+              href="/advertise"
+              onClick={() => setOpen(false)}
+              className="rounded-lg px-3 py-2 text-sm text-muted hover:bg-surface hover:text-white"
+            >
+              Advertise
+            </Link>
           </div>
         </div>
       ) : null}

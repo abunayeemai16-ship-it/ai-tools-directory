@@ -12,7 +12,13 @@ import { seedComparisonDrafts, seedToolDrafts } from "@/lib/data/seed-drafts";
 import catalogSnapshotSeed from "@/lib/data/catalog-snapshot.json";
 import { tools as seedTools } from "@/lib/data/tools";
 import { clampRating, clampReviewCount, slugify } from "@/lib/utils";
-import { isAdLive } from "@/lib/ads";
+import { isAdLive, publicAd } from "@/lib/ads";
+import {
+  HOMEPAGE_FEATURED,
+  type AdvertiseAvailability,
+  type AdvertiseOrderInput,
+  type AdvertiseStats,
+} from "@/lib/advertise";
 import type {
   AdCampaign,
   AdPlacement,
@@ -436,6 +442,9 @@ function normalizeAd(raw: Partial<AdCampaign> & Pick<AdCampaign, "id" | "title">
     clicks: Math.max(0, Math.round(Number(raw.clicks) || 0)),
     createdAt: raw.createdAt || new Date().toISOString(),
     updatedAt: raw.updatedAt || raw.createdAt || new Date().toISOString(),
+    ...(Number(raw.paidDays) > 0 ? { paidDays: Math.round(Number(raw.paidDays)) } : {}),
+    ...(raw.paymentRef?.trim() ? { paymentRef: raw.paymentRef.trim() } : {}),
+    ...(raw.contactEmail?.trim() ? { contactEmail: raw.contactEmail.trim() } : {}),
   };
 }
 
@@ -1136,13 +1145,97 @@ export async function expireEndedAds() {
 
 export async function listLiveAds(placement?: AdPlacement, category?: string) {
   const db = await readDb();
-  return db.ads.filter((ad) => {
-    if (!isAdLive(ad)) return false;
-    if (placement && ad.placement !== placement) return false;
-    if (placement === "category_sponsor" && category && ad.targetCategory !== category) {
-      return false;
-    }
-    return true;
+  return db.ads
+    .filter((ad) => {
+      if (!isAdLive(ad)) return false;
+      if (placement && ad.placement !== placement) return false;
+      if (placement === "category_sponsor" && category && ad.targetCategory !== category) {
+        return false;
+      }
+      return true;
+    })
+    .map(publicAd);
+}
+
+function isPendingPaidBooking(ad: AdCampaign) {
+  return Boolean(ad.paymentRef) && ad.status === "paused" && !ad.endDate;
+}
+
+function featuredAvailability(db: Database): AdvertiseAvailability {
+  const now = Date.now();
+  const booked = db.ads.filter(
+    (ad) => ad.placement === "hero_banner" && (isAdLive(ad, now) || isPendingPaidBooking(ad)),
+  );
+  if (!booked.length) return { available: true, nextOpening: null };
+  if (booked.some((ad) => !ad.endDate)) return { available: false, nextOpening: null };
+  const lastEnd = Math.max(...booked.map((ad) => new Date(ad.endDate).getTime()));
+  return {
+    available: false,
+    nextOpening: Number.isFinite(lastEnd) ? new Date(lastEnd).toISOString() : null,
+  };
+}
+
+export async function getFeaturedAvailability() {
+  return featuredAvailability(await readDb());
+}
+
+export async function getAdvertiseStats(): Promise<AdvertiseStats> {
+  const db = await readDb();
+  const since = Date.now() - 30 * 86_400_000;
+  const recent = db.pageviews.filter((event) => new Date(event.timestamp).getTime() >= since);
+  const countries = new Map<string, number>();
+  for (const event of recent) {
+    if (!event.country || event.country === "UN") continue;
+    countries.set(event.country, (countries.get(event.country) ?? 0) + 1);
+  }
+  return {
+    publishedTools: db.tools.filter(isPublished).length,
+    categories: db.categories.length,
+    pageviews30d: recent.length,
+    visitors30d: new Set(recent.map((event) => event.sessionId)).size,
+    topCountries: [...countries.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([code]) => code),
+  };
+}
+
+export async function hasAdPayment(paymentRef: string) {
+  const db = await readDb();
+  return db.ads.some((ad) => ad.paymentRef === paymentRef);
+}
+
+/** Records a paid homepage booking as a paused campaign awaiting editorial review. */
+export async function createPaidFeaturedAd(
+  input: AdvertiseOrderInput,
+  payment: { orderId: string; captureId: string; payerEmail: string },
+) {
+  return withDb((db) => {
+    const existing = db.ads.find((ad) => ad.paymentRef === payment.orderId);
+    if (existing) return existing;
+    const now = new Date().toISOString();
+    const ad = normalizeAd({
+      id: newId("ad"),
+      title: `${input.toolName} · ${HOMEPAGE_FEATURED.name}`,
+      partnerName: input.toolName,
+      partnershipType: "Paid Sponsorship ($)",
+      placement: "hero_banner",
+      headline: input.headline,
+      subheadline: input.description,
+      ctaText: `Visit ${input.toolName}`,
+      targetUrl: input.website,
+      badgeText: "Sponsored",
+      commissionOrFeeNote: `PayPal capture ${payment.captureId} · $${HOMEPAGE_FEATURED.price} · ${HOMEPAGE_FEATURED.days} days from activation · contact ${input.email}${payment.payerEmail && payment.payerEmail !== input.email ? ` · payer ${payment.payerEmail}` : ""}`,
+      fixedFeeEarned: HOMEPAGE_FEATURED.price,
+      status: "paused",
+      paidDays: HOMEPAGE_FEATURED.days,
+      paymentRef: payment.orderId,
+      contactEmail: input.email,
+      createdAt: now,
+      updatedAt: now,
+    });
+    db.ads.unshift(ad);
+    return ad;
   });
 }
 
@@ -1226,6 +1319,12 @@ export async function updateAd(
     const ad = db.ads.find((item) => item.id === id);
     if (!ad) return null;
     const merged = { ...ad, ...patch };
+    if (ad.status !== "active" && merged.status === "active" && ad.paidDays && !merged.endDate) {
+      const start = merged.startDate ? new Date(merged.startDate) : new Date();
+      const begin = Number.isFinite(start.getTime()) ? start : new Date();
+      merged.startDate = begin.toISOString();
+      merged.endDate = new Date(begin.getTime() + ad.paidDays * 86_400_000).toISOString();
+    }
     const linked = maybePublishPartnerTool(db, merged);
     Object.assign(
       ad,

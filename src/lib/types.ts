@@ -265,6 +265,10 @@ export type AdCampaign = {
   clicks: number;
   createdAt: string;
   updatedAt: string;
+  /** Paid self-serve bookings: run length applied when the admin activates the campaign. */
+  paidDays?: number;
+  paymentRef?: string;
+  contactEmail?: string;
 };
 
 export type AppSettings = {
