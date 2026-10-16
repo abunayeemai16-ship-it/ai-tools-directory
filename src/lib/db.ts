@@ -541,7 +541,8 @@ function emptyDb(): Database {
 }
 
 function normalizeDb(raw: Partial<Database> | null): Database {
-  const hasTools = Array.isArray(raw?.tools) && raw.tools.length > 0;
+  const toolsIn = Array.isArray(raw?.tools) ? raw.tools : [];
+  const hasTools = toolsIn.length > 0;
   const fallback = hasTools ? null : snapshotCatalog();
   const db: Database = {
     settings: normalizeSettings(raw?.settings),
@@ -557,7 +558,7 @@ function normalizeDb(raw: Partial<Database> | null): Database {
             .sort((a, b) => a.sortOrder - b.sortOrder)
         : DEFAULT_CATEGORIES.map((item) => ({ ...item })),
     tools: hasTools
-      ? raw.tools.map((tool) => normalizeTool(tool))
+      ? toolsIn.map((tool) => normalizeTool(tool))
       : fallback?.tools ?? seedTools.map((tool) => normalizeTool(tool)),
     comparisons: Array.isArray(raw?.comparisons)
       ? raw.comparisons.map((item) => normalizeComparison(item))

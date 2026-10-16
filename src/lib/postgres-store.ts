@@ -74,11 +74,10 @@ function publishedCount(raw: unknown) {
 async function upsert(client: Pool | PoolClient, key: string, value: unknown) {
   if (key === CATALOG_KEY) {
     const incoming = publishedCount(value);
-    const current = await client.query<{ value: unknown }>({
-      text: "SELECT value FROM forge_kv WHERE key = $1",
-      values: [key],
-      prepare: false,
-    });
+    const current = await client.query<{ value: unknown }>(
+      "SELECT value FROM forge_kv WHERE key = $1",
+      [key],
+    );
     const existing = publishedCount(current.rows[0]?.value);
     if (existing > incoming) {
       console.warn("[forge] skip catalog write that would drop published tools", {
@@ -88,13 +87,12 @@ async function upsert(client: Pool | PoolClient, key: string, value: unknown) {
       return;
     }
   }
-  await client.query({
-    text: `INSERT INTO forge_kv (key, value, updated_at)
+  await client.query(
+    `INSERT INTO forge_kv (key, value, updated_at)
      VALUES ($1, $2::jsonb, NOW())
      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
-    values: [key, JSON.stringify(value)],
-    prepare: false,
-  });
+    [key, JSON.stringify(value)],
+  );
 }
 
 function mergeAnalytics(
