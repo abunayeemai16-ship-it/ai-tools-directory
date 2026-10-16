@@ -11,6 +11,27 @@ export const metadata: Metadata = {
 
 export default async function AdminOverviewPage() {
   await live();
-  const initial = await getAnalyticsOverview();
-  return <OverviewDashboard initial={initial} />;
+  try {
+    const initial = await getAnalyticsOverview();
+    return <OverviewDashboard initial={initial} />;
+  } catch (error) {
+    console.error("[forge] admin overview failed", error);
+    return (
+      <OverviewDashboard
+        initial={{
+          liveVisitors: 0,
+          clicksToday: 0,
+          clicksMonth: 0,
+          epc: 0,
+          commissionsToday: 0,
+          commissionsMonth: 0,
+          estimatedRevenueToday: 0,
+          estimatedRevenueMonth: 0,
+          topCountry: null,
+          countries: [],
+          traffic: { daily: [], weekly: [], monthly: [] },
+        }}
+      />
+    );
+  }
 }

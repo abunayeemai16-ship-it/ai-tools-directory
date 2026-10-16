@@ -15,6 +15,7 @@ export function AdminLoginForm() {
     try {
       const res = await fetch("/api/admin/login", {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ password }),
       });
@@ -27,7 +28,9 @@ export function AdminLoginForm() {
           throw new Error("Login failed. The server did not return JSON.");
         }
       }
-      if (!res.ok) throw new Error(payload.error || "Incorrect password");
+      if (!res.ok) {
+        throw new Error(payload.error || (text ? "Incorrect password" : "Login failed. Try again."));
+      }
       window.location.assign("/admin");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");

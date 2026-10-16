@@ -10,19 +10,17 @@ import {
   verifyPassword,
   verifySession,
 } from "@/lib/crypto-auth";
-import {
-  changeAdminPasswordHash,
-  getAdminAuthSettings,
-  rotateSessionSecret,
-} from "@/lib/db";
 
 export function adminCookieOptions() {
+  const secure =
+    process.env.VERCEL === "1" ||
+    process.env.NODE_ENV === "production";
   return {
     httpOnly: true,
     sameSite: "lax" as const,
     path: "/",
     maxAge: SESSION_MAX_AGE,
-    secure: process.env.NODE_ENV === "production",
+    secure,
   };
 }
 
@@ -69,6 +67,7 @@ export async function logoutAdmin() {
 
 export async function updateAdminPassword(current: string, next: string) {
   if (!secretsEqual(current, expectedAdminPassword())) {
+    const { getAdminAuthSettings } = await import("@/lib/db");
     const settings = await getAdminAuthSettings().catch(() => null);
     const dbOk = settings
       ? await verifyPassword(current, settings.adminPasswordHash)
@@ -80,8 +79,9 @@ export async function updateAdminPassword(current: string, next: string) {
   if (next.trim().length < 8) {
     return { ok: false as const, error: "New password must be at least 8 characters" };
   }
+  const { changeAdminPasswordHash, rotateSessionSecret } = await import("@/lib/db");
   await changeAdminPasswordHash(await hashPassword(next.trim()));
-  const secret = await rotateSessionSecret();
+  await rotateSessionSecret();
   const token = signSession(adminSessionSecret());
   (await cookies()).set(ADMIN_COOKIE, token, adminCookieOptions());
   return { ok: true as const };
