@@ -56,7 +56,7 @@ export function ReadyDrafts({
   categories?: DirectoryCategory[];
 }) {
   const [data, setData] = useState(() => uniqueDrafts(initial));
-  const [busy, setBusy] = useState<"auto" | string | null>(null);
+  const [busy, setBusy] = useState<"auto" | "approve-all" | string | null>(null);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [openTool, setOpenTool] = useState<Tool | null>(null);
@@ -101,6 +101,43 @@ export function ReadyDrafts({
     }
   }
 
+  async function approveAll() {
+    if (!data.count) return;
+    if (
+      !window.confirm(
+        `Publish all ${data.count} drafts to the live directory? They will appear on the public site immediately.`,
+      )
+    ) {
+      return;
+    }
+    setBusy("approve-all");
+    setError("");
+    setNotice("");
+    try {
+      const res = await fetch("/api/admin/drafts/approve-all", { method: "POST" });
+      const payload = (await res.json()) as {
+        error?: string;
+        count?: number;
+        tools?: number;
+        comparisons?: number;
+      };
+      if (!res.ok) throw new Error(payload.error || "Approve all failed");
+      const tools = payload.tools ?? 0;
+      const comparisons = payload.comparisons ?? 0;
+      setNotice(
+        `Approved ${payload.count ?? data.count} drafts (${tools} tools, ${comparisons} comparisons). They are live on the public site.`,
+      );
+      setOpenTool(null);
+      setOpenVs(null);
+      setData({ tools: [], comparisons: [], count: 0 });
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Approve all failed");
+    } finally {
+      setBusy(null);
+    }
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-4">
@@ -108,20 +145,34 @@ export function ReadyDrafts({
           <p className="text-xs uppercase tracking-[0.18em] text-muted">Human in the loop</p>
           <h1 className="mt-1 font-serif text-3xl">Ready Drafts</h1>
           <p className="mt-2 max-w-2xl text-sm text-muted">
-            AI can draft. Google Scaled Content Abuse requires a human to edit,
-            add an affiliate URL, and click Approve & Publish. Nothing in this
-            queue is live until you do.
+            AI can draft. Edit one and click Approve &amp; Publish, or Approve all
+            to send the whole queue live. Nothing is indexed until you publish.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => void autoDraft()}
-          disabled={busy === "auto"}
-          className="inline-flex items-center gap-2 rounded-full bg-accent px-4 py-2.5 text-sm font-semibold text-ink disabled:opacity-60"
-        >
-          {busy === "auto" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-          Auto-Generate Today&apos;s AI Drafts
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => void approveAll()}
+            disabled={Boolean(busy) || data.count === 0}
+            className="inline-flex items-center gap-2 rounded-full bg-mint px-4 py-2.5 text-sm font-semibold text-ink disabled:opacity-60"
+          >
+            {busy === "approve-all" ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Check className="h-4 w-4" />
+            )}
+            Approve all{data.count ? ` (${data.count})` : ""}
+          </button>
+          <button
+            type="button"
+            onClick={() => void autoDraft()}
+            disabled={Boolean(busy)}
+            className="inline-flex items-center gap-2 rounded-full bg-accent px-4 py-2.5 text-sm font-semibold text-ink disabled:opacity-60"
+          >
+            {busy === "auto" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+            Auto-Generate Today&apos;s AI Drafts
+          </button>
+        </div>
       </div>
 
       {error ? <p className="text-sm text-rose">{error}</p> : null}

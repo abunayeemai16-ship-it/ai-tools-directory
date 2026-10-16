@@ -1797,6 +1797,33 @@ export async function updateComparison(slug: string, patch: Partial<Comparison>)
   });
 }
 
+function publishableSlug(db: Database, tool: Tool) {
+  const stripped = tool.slug.replace(/-draft$/, "");
+  if (stripped === tool.slug) return tool.slug;
+  const taken = db.tools.some((item) => item !== tool && item.slug === stripped);
+  return taken ? tool.slug : stripped;
+}
+
+function publishComparisonInPlace(db: Database, item: Comparison) {
+  item.status = "published";
+  if (item.affiliateUrl) {
+    const winnerSlug = item.overallWinner === "b" ? item.toolBSlug : item.toolASlug;
+    const tool = db.tools.find((row) => row.slug === winnerSlug);
+    if (tool && (!tool.affiliateUrl || tool.affiliateUrl === tool.website)) {
+      tool.affiliateUrl = item.affiliateUrl;
+    }
+  }
+  if (item.couponCode) {
+    for (const slugKey of [item.toolASlug, item.toolBSlug]) {
+      const tool = db.tools.find((row) => row.slug === slugKey);
+      if (tool && !tool.couponCode) {
+        tool.couponCode = item.couponCode;
+        tool.couponDiscount = item.couponDiscount;
+      }
+    }
+  }
+}
+
 export async function approveTool(slug: string) {
   return withDb((db) => {
     const tool = db.tools.find((item) => item.slug === slug);
@@ -1810,25 +1837,61 @@ export async function approveComparison(slug: string) {
   return withDb((db) => {
     const item = db.comparisons.find((row) => row.slug === slug);
     if (!item) return null;
-    item.status = "published";
-    if (item.affiliateUrl) {
-      const winnerSlug =
-        item.overallWinner === "b" ? item.toolBSlug : item.toolASlug;
-      const tool = db.tools.find((row) => row.slug === winnerSlug);
-      if (tool && (!tool.affiliateUrl || tool.affiliateUrl === tool.website)) {
-        tool.affiliateUrl = item.affiliateUrl;
-      }
-    }
-    if (item.couponCode) {
-      for (const slugKey of [item.toolASlug, item.toolBSlug]) {
-        const tool = db.tools.find((row) => row.slug === slugKey);
-        if (tool && !tool.couponCode) {
-          tool.couponCode = item.couponCode;
-          tool.couponDiscount = item.couponDiscount;
-        }
-      }
-    }
+    publishComparisonInPlace(db, item);
     return item;
+  });
+}
+
+export async function approveAllDrafts() {
+  return withDb((db) => {
+    pruneDuplicateDrafts(db);
+    const draftTools = db.tools.filter((tool) => tool.status === "draft");
+    const drop = new Set<string>();
+    const rewrite = new Map<string, string>();
+
+    for (const tool of draftTools) {
+      const existing = db.tools.find(
+        (item) =>
+          item.status !== "draft" &&
+          !drop.has(item.slug) &&
+          toolNameKey(item.name) === toolNameKey(tool.name),
+      );
+      if (existing) {
+        Object.assign(existing, tool, {
+          slug: existing.slug,
+          createdAt: existing.createdAt,
+          status: "published" as const,
+        });
+        drop.add(tool.slug);
+        rewrite.set(tool.slug, existing.slug);
+        continue;
+      }
+      const nextSlug = publishableSlug(db, tool);
+      if (nextSlug !== tool.slug) rewrite.set(tool.slug, nextSlug);
+      tool.slug = nextSlug;
+      tool.status = "published";
+    }
+
+    if (drop.size) {
+      db.tools = db.tools.filter((tool) => !drop.has(tool.slug));
+    }
+    if (rewrite.size) {
+      for (const comparison of db.comparisons) {
+        comparison.toolASlug = rewrite.get(comparison.toolASlug) || comparison.toolASlug;
+        comparison.toolBSlug = rewrite.get(comparison.toolBSlug) || comparison.toolBSlug;
+      }
+    }
+
+    const draftComparisons = db.comparisons.filter((item) => item.status === "draft");
+    for (const item of draftComparisons) {
+      publishComparisonInPlace(db, item);
+    }
+
+    return {
+      tools: draftTools.length,
+      comparisons: draftComparisons.length,
+      count: draftTools.length + draftComparisons.length,
+    };
   });
 }
 
