@@ -6,6 +6,7 @@ import { formatNumber, starsLabel } from "@/lib/utils";
 import { AffiliateButton } from "@/components/tools/AffiliateButton";
 import { PricingBadge } from "@/components/tools/PricingBadge";
 import { StarRating } from "@/components/tools/StarRating";
+import { ToolCover } from "@/components/tools/ToolCover";
 import { ToolLogo } from "@/components/tools/ToolLogo";
 
 export function ToolCard({
@@ -19,14 +20,24 @@ export function ToolCard({
   spotlight?: boolean;
   spotlightLabel?: string;
 }) {
+  const headline = tool.shortPitch.trim() || `${tool.name} at a glance`;
+
   return (
     <article
-      className={`group flex flex-col rounded-2xl border bg-surface p-5 transition ${
+      className={`group flex flex-col overflow-hidden rounded-2xl border bg-surface transition ${
         spotlight
           ? "border-accent/60 shadow-[0_0_28px_rgba(255,176,32,0.22)] ring-1 ring-accent/40"
           : "border-line hover:border-accent/40 hover:bg-surface-2"
       }`}
     >
+      <ToolCover
+        name={tool.name}
+        slug={tool.slug}
+        category={tool.category}
+        color={tool.brandColor}
+        headline={headline}
+      />
+      <div className="flex flex-1 flex-col p-5">
       <div className="flex items-start gap-3">
         <ToolLogo name={tool.name} category={tool.category} color={tool.brandColor} />
         <div className="min-w-0 flex-1">
@@ -72,6 +83,7 @@ export function ToolCard({
         >
           Review
         </Link>
+      </div>
       </div>
     </article>
   );

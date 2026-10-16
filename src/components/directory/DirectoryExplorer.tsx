@@ -24,7 +24,9 @@ export function DirectoryExplorer({
   ads?: AdCampaign[];
 }) {
   const [query, setQuery] = useState("");
+  const [nameQuery, setNameQuery] = useState("");
   const [category, setCategory] = useState("All");
+  const [price, setPrice] = useState("All");
   const [sort, setSort] = useState<SortKey>("featured");
   const [expanded, setExpanded] = useState(false);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
@@ -64,16 +66,19 @@ export function DirectoryExplorer({
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
+    const nameQ = nameQuery.trim().toLowerCase();
     const rows = tools.filter((tool) => {
       const label = categoryLabel(tool.category, categories);
       const matchesCategory = category === "All" || tool.category === category;
+      const matchesPrice = price === "All" || tool.pricingModel === price;
+      const matchesName = !nameQ || tool.name.toLowerCase().includes(nameQ);
       const matchesQuery =
         !q ||
         tool.name.toLowerCase().includes(q) ||
         tool.shortPitch.toLowerCase().includes(q) ||
         tool.bestFor.toLowerCase().includes(q) ||
         label.toLowerCase().includes(q);
-      return matchesCategory && matchesQuery;
+      return matchesCategory && matchesPrice && matchesName && matchesQuery;
     });
     rows.sort((a, b) => {
       const aPinned = pinnedSlugs.has(a.slug);
@@ -90,7 +95,7 @@ export function DirectoryExplorer({
       return b.rating - a.rating || b.reviewCount - a.reviewCount;
     });
     return rows;
-  }, [tools, query, category, categories, sort, pinnedSlugs]);
+  }, [tools, query, nameQuery, category, price, categories, sort, pinnedSlugs]);
 
   const shown = filtered.slice(0, visibleCount);
   const activeName = category === "All" ? "" : categoryLabel(category, categories);
@@ -119,7 +124,7 @@ export function DirectoryExplorer({
           </p>
 
           <form
-            className="mt-8 max-w-2xl"
+            className="mt-8 max-w-3xl"
             onSubmit={(event) => event.preventDefault()}
           >
             <label className="relative block">
@@ -134,6 +139,51 @@ export function DirectoryExplorer({
                 className="h-14 w-full rounded-2xl border border-line bg-surface/80 pr-4 pl-12 text-base outline-none ring-accent/40 placeholder:text-muted focus:ring-2"
               />
             </label>
+            <div className="mt-3 grid gap-2 sm:grid-cols-3">
+              <label className="block">
+                <span className="sr-only">Tool name</span>
+                <input
+                  value={nameQuery}
+                  onChange={(event) => {
+                    setNameQuery(event.target.value);
+                    setVisibleCount(PAGE_SIZE);
+                  }}
+                  placeholder="Tool name"
+                  className="h-11 w-full rounded-xl border border-line bg-surface/80 px-3 text-sm outline-none ring-accent/40 placeholder:text-muted focus:ring-2"
+                />
+              </label>
+              <label className="block">
+                <span className="sr-only">Category</span>
+                <select
+                  value={category}
+                  onChange={(event) => setFilter(event.target.value)}
+                  className="h-11 w-full rounded-xl border border-line bg-surface/80 px-3 text-sm outline-none ring-accent/40 focus:ring-2"
+                >
+                  <option value="All">Category</option>
+                  {categories.map((item) => (
+                    <option key={item.slug} value={item.slug}>
+                      {item.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="block">
+                <span className="sr-only">Price</span>
+                <select
+                  value={price}
+                  onChange={(event) => {
+                    setPrice(event.target.value);
+                    setVisibleCount(PAGE_SIZE);
+                  }}
+                  className="h-11 w-full rounded-xl border border-line bg-surface/80 px-3 text-sm outline-none ring-accent/40 focus:ring-2"
+                >
+                  <option value="All">Price</option>
+                  <option value="Free">Free</option>
+                  <option value="Freemium">Freemium</option>
+                  <option value="Paid">Paid</option>
+                </select>
+              </label>
+            </div>
           </form>
 
           {heroAds.length > 0 ? (
