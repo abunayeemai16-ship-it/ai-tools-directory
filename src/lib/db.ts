@@ -541,7 +541,8 @@ function emptyDb(): Database {
 }
 
 function normalizeDb(raw: Partial<Database> | null): Database {
-  const base = emptyDb();
+  const hasTools = Array.isArray(raw?.tools) && raw.tools.length > 0;
+  const fallback = hasTools ? null : snapshotCatalog();
   const db: Database = {
     settings: normalizeSettings(raw?.settings),
     geminiKeys: Array.isArray(raw?.geminiKeys)
@@ -555,10 +556,12 @@ function normalizeDb(raw: Partial<Database> | null): Database {
             .map((item, index) => normalizeCategory(item, index))
             .sort((a, b) => a.sortOrder - b.sortOrder)
         : DEFAULT_CATEGORIES.map((item) => ({ ...item })),
-    tools: Array.isArray(raw?.tools) ? raw.tools.map((tool) => normalizeTool(tool)) : base.tools,
+    tools: hasTools
+      ? raw.tools.map((tool) => normalizeTool(tool))
+      : fallback?.tools ?? seedTools.map((tool) => normalizeTool(tool)),
     comparisons: Array.isArray(raw?.comparisons)
       ? raw.comparisons.map((item) => normalizeComparison(item))
-      : base.comparisons,
+      : fallback?.comparisons ?? seedComparisons.map((item) => normalizeComparison(item)),
     submissions: Array.isArray(raw?.submissions) ? raw.submissions : [],
     sessions: Array.isArray(raw?.sessions) ? raw.sessions : [],
     pageviews: Array.isArray(raw?.pageviews) ? raw.pageviews : [],
@@ -646,20 +649,15 @@ async function readFileDb(): Promise<Database> {
   if (usesPostgres()) {
     try {
       const { loadPostgresStore } = await postgresStore();
-      const raw = await Promise.race([
-        loadPostgresStore(),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error("Postgres catalog load timed out")), 4_000),
-        ),
-      ]);
+      const raw = await loadPostgresStore();
       const { db } = await hydrateFromRaw(raw);
-      lastCatalogSnap = catalogSnapshot(db);
+      lastCatalogSnap = "__postgres__";
       lastAnalyticsSnap = analyticsSnapshot(db);
       return db;
     } catch (error) {
       console.error("[forge] Postgres catalog load failed, using bundled snapshot", error);
       const db = emptyDb();
-      lastCatalogSnap = catalogSnapshot(db);
+      lastCatalogSnap = "__snapshot__";
       lastAnalyticsSnap = analyticsSnapshot(db);
       return db;
     }
@@ -720,7 +718,7 @@ export function withDb<T>(
           const result = await fn(db);
           memory = db;
           memoryLoadedAt = performance.now();
-          lastCatalogSnap = catalogSnapshot(db);
+          lastCatalogSnap = "__postgres__";
           lastAnalyticsSnap = analyticsSnapshot(db);
           return { result, next: db };
         });
@@ -1276,7 +1274,7 @@ export async function recordAdImpressions(ids: string[]) {
       count += 1;
     }
     return count;
-  });
+  }, { immediate: false });
 }
 
 export async function recordAdClick(id: string, country: string) {
@@ -1842,8 +1840,25 @@ export async function approveComparison(slug: string) {
   });
 }
 
+function catalogPayload(db: Database) {
+  return {
+    settings: db.settings,
+    geminiKeys: db.geminiKeys,
+    categories: db.categories,
+    tools: db.tools,
+    comparisons: db.comparisons,
+    submissions: db.submissions,
+    clicks: db.clicks,
+    commissions: db.commissions,
+    rankChecks: db.rankChecks,
+    ads: db.ads,
+    sessions: db.sessions,
+    pageviews: db.pageviews,
+  };
+}
+
 export async function approveAllDrafts() {
-  return withDb((db) => {
+  const result = await withDb((db) => {
     pruneDuplicateDrafts(db);
     const draftTools = db.tools.filter((tool) => tool.status === "draft");
     const drop = new Set<string>();
@@ -1891,8 +1906,15 @@ export async function approveAllDrafts() {
       tools: draftTools.length,
       comparisons: draftComparisons.length,
       count: draftTools.length + draftComparisons.length,
+      published: db.tools.filter((tool) => tool.status !== "draft").length,
     };
   });
+  if (usesPostgres() && memory) {
+    const { savePostgresCatalog } = await postgresStore();
+    await savePostgresCatalog(catalogPayload(memory));
+    lastCatalogSnap = "__postgres__";
+  }
+  return result;
 }
 
 export async function deleteComparison(slug: string) {

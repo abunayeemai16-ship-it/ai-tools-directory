@@ -1,3 +1,4 @@
+import { revalidatePath } from "next/cache";
 import { NextResponse } from "next/server";
 import { requireAdminApi } from "@/lib/admin-auth";
 import { approveAllDrafts } from "@/lib/db";
@@ -9,6 +10,11 @@ export async function POST() {
   if (denied) return denied;
   try {
     const result = await approveAllDrafts();
+    revalidatePath("/");
+    revalidatePath("/deals");
+    revalidatePath("/compare");
+    revalidatePath("/tool/[slug]", "page");
+    revalidatePath("/sitemap.xml");
     return NextResponse.json({ ok: true, ...result });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Approve all failed";

@@ -65,13 +65,36 @@ async function ensureSchema(runner: Pool | PoolClient) {
   schemaReady = true;
 }
 
+function publishedCount(raw: unknown) {
+  const tools = (raw as { tools?: { status?: string }[] } | null)?.tools;
+  if (!Array.isArray(tools)) return 0;
+  return tools.filter((tool) => tool?.status !== "draft").length;
+}
+
 async function upsert(client: Pool | PoolClient, key: string, value: unknown) {
-  await client.query(
-    `INSERT INTO forge_kv (key, value, updated_at)
+  if (key === CATALOG_KEY) {
+    const incoming = publishedCount(value);
+    const current = await client.query<{ value: unknown }>({
+      text: "SELECT value FROM forge_kv WHERE key = $1",
+      values: [key],
+      prepare: false,
+    });
+    const existing = publishedCount(current.rows[0]?.value);
+    if (existing > incoming) {
+      console.warn("[forge] skip catalog write that would drop published tools", {
+        existing,
+        incoming,
+      });
+      return;
+    }
+  }
+  await client.query({
+    text: `INSERT INTO forge_kv (key, value, updated_at)
      VALUES ($1, $2::jsonb, NOW())
      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
-    [key, JSON.stringify(value)],
-  );
+    values: [key, JSON.stringify(value)],
+    prepare: false,
+  });
 }
 
 function mergeAnalytics(
