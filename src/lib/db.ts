@@ -673,10 +673,11 @@ async function ensureMemory() {
     );
   }
   const postgresStale =
-    usesPostgres() && (!memory || Date.now() - memoryLoadedAt > POSTGRES_MEMORY_TTL_MS);
+    usesPostgres() &&
+    (!memory || performance.now() - memoryLoadedAt > POSTGRES_MEMORY_TTL_MS);
   if (postgresStale || !memory) {
     memory = await readFileDb();
-    memoryLoadedAt = Date.now();
+    memoryLoadedAt = performance.now();
   }
   const dirty = await applyRuntimeDefaults(memory);
   if (dirty || lastCatalogSnap === "") await persistCatalog();
@@ -694,7 +695,7 @@ export function withDb<T>(
         const { db } = await hydrateFromRaw(raw);
         const result = await fn(db);
         memory = db;
-        memoryLoadedAt = Date.now();
+        memoryLoadedAt = performance.now();
         lastCatalogSnap = catalogSnapshot(db);
         lastAnalyticsSnap = analyticsSnapshot(db);
         return { result, next: db };

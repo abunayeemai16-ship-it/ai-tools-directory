@@ -23,6 +23,7 @@ export async function generateStaticParams() {
 export async function generateMetadata({
   params,
 }: PageProps<"/compare/[slug]">): Promise<Metadata> {
+  await live();
   const { slug } = await params;
   const comparison = await getComparisonBySlug(slug);
   const pair = comparison ? await getComparisonTools(comparison) : null;
