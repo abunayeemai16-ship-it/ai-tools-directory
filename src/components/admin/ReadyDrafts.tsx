@@ -11,6 +11,32 @@ type DraftsPayload = {
   count: number;
 };
 
+function uniqueDraftTools(tools: Tool[]) {
+  const seen = new Set<string>();
+  return tools.filter((tool) => {
+    const key = tool.name.trim().toLowerCase();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function uniqueDraftComparisons(items: Comparison[]) {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const key = `${item.toolASlug}::${item.toolBSlug}`;
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function uniqueDrafts(payload: DraftsPayload): DraftsPayload {
+  const tools = uniqueDraftTools(payload.tools);
+  const comparisons = uniqueDraftComparisons(payload.comparisons);
+  return { tools, comparisons, count: tools.length + comparisons.length };
+}
+
 export function ReadyDrafts({
   initial,
   categories = [],
@@ -18,7 +44,7 @@ export function ReadyDrafts({
   initial: DraftsPayload;
   categories?: DirectoryCategory[];
 }) {
-  const [data, setData] = useState(initial);
+  const [data, setData] = useState(() => uniqueDrafts(initial));
   const [busy, setBusy] = useState<"auto" | string | null>(null);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
@@ -26,9 +52,13 @@ export function ReadyDrafts({
   const [openVs, setOpenVs] = useState<Comparison | null>(null);
 
   const load = useCallback(async () => {
-    const res = await fetch("/api/drafts", { cache: "no-store" });
-    if (!res.ok) return;
-    setData((await res.json()) as DraftsPayload);
+    try {
+      const res = await fetch("/api/drafts", { cache: "no-store" });
+      if (!res.ok) return;
+      setData(uniqueDrafts((await res.json()) as DraftsPayload));
+    } catch {
+      // Draft poll can fail while Postgres is busy; keep the last list.
+    }
   }, []);
 
   useEffect(() => {
@@ -44,10 +74,13 @@ export function ReadyDrafts({
       const res = await fetch("/api/admin/auto-draft", { method: "POST" });
       const payload = (await res.json()) as { error?: string; source?: string; tools?: Tool[] };
       if (!res.ok) throw new Error(payload.error || "Auto-draft failed");
+      const added = payload.tools?.length ?? 0;
       setNotice(
-        payload.source === "gemini"
-          ? "Gemini drafted new reviews into the queue. Human review required before they go live."
-          : "Structured fallback drafts added (no active Gemini keys). Add keys in API Keys & Settings, then edit and approve before publish.",
+        added === 0
+          ? "No new drafts — each tool already has a unique row in the queue or catalog."
+          : payload.source === "gemini"
+            ? "Gemini drafted new reviews into the queue. Human review required before they go live."
+            : "Structured fallback drafts added (no active Gemini keys). Add keys in API Keys & Settings, then edit and approve before publish.",
       );
       await load();
     } catch (err) {
@@ -94,7 +127,7 @@ export function ReadyDrafts({
         ) : (
           data.tools.map((tool) => (
             <DraftRow
-              key={tool.slug}
+              key={tool.slug || tool.name}
               title={tool.name}
               subtitle={`${categoryLabel(tool.category, categories)} · ${tool.seoTitle}`}
               onEdit={() => setOpenTool(tool)}
@@ -112,7 +145,7 @@ export function ReadyDrafts({
         ) : (
           data.comparisons.map((item) => (
             <DraftRow
-              key={item.slug}
+              key={item.slug || `${item.toolASlug}-vs-${item.toolBSlug}`}
               title={item.seoTitle}
               subtitle={item.tagline}
               onEdit={() => setOpenVs(item)}

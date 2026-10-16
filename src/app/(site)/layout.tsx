@@ -1,14 +1,16 @@
 import { AnalyticsTracker } from "@/components/analytics/AnalyticsTracker";
 import { Footer } from "@/components/layout/Footer";
 import { Header } from "@/components/layout/Header";
+import { live } from "@/lib/live";
 
 export const instant = false;
 
-export default function SiteLayout({
+export default async function SiteLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
+  await live();
   return (
     <>
       <AnalyticsTracker />

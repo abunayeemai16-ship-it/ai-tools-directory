@@ -13,7 +13,8 @@ export function AdImpression({ ids }: { ids: string[] }) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ids: fresh }),
-      keepalive: true,
+    }).catch(() => {
+      // Impression tracking must never trip the Next.js overlay.
     });
   }, [ids]);
 

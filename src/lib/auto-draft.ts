@@ -464,50 +464,63 @@ export function fallbackComparison(
   };
 }
 
+function isTaken(taken: Set<string>, name: string, slug?: string) {
+  const nameSlug = slugify(name);
+  return taken.has(nameSlug) || Boolean(slug && taken.has(slug));
+}
+
 export async function generateDailyDrafts(existingNames: string[]): Promise<{
   reviews: GeneratedReview[];
   comparisons: GeneratedComparison[];
   source: "gemini" | "fallback";
 }> {
-  const taken = new Set(existingNames.map((name) => slugify(name)));
-  const unused = TRENDING.filter((item) => !taken.has(item.slug));
-  const seedUnused = [...seedToolDrafts, ...unused];
+  const taken = new Set(existingNames.map((name) => slugify(name)).filter(Boolean));
+  const unusedTrending = TRENDING.filter(
+    (item) => !isTaken(taken, item.name, item.slug),
+  );
+  const unusedSeeds = seedToolDrafts.filter(
+    (item) => !isTaken(taken, item.name, item.slug),
+  );
+  const extras = ["Kling AI", "Gamma"].filter((name) => !isTaken(taken, name));
+  const pool = [...unusedTrending, ...unusedSeeds];
+  const targets = [
+    ...pool.map((item) => item.name),
+    ...extras,
+  ].filter((name, index, list) => list.findIndex((item) => slugify(item) === slugify(name)) === index)
+    .slice(0, 2);
+
+  if (targets.length === 0) {
+    return { reviews: [], comparisons: [], source: (await hasUsableGeminiKey()) ? "gemini" : "fallback" };
+  }
 
   if (await hasUsableGeminiKey()) {
     try {
       const reviews: GeneratedReview[] = [];
-      const picks = unused.slice(0, 2);
-      const targets =
-        picks.length >= 2
-          ? picks.map((item) => item.name)
-          : ["Kling AI", "Gamma"].filter((name) => !taken.has(slugify(name)));
-      for (const name of targets.slice(0, 2)) {
+      for (const name of targets) {
         const review = await generateReviewWithGemini(name);
+        if (isTaken(taken, review.name, review.slug)) continue;
         review.slug = uniqueSlug(review.slug || name, taken);
+        taken.add(slugify(review.name));
         reviews.push(review);
       }
-      const a = reviews[0]?.name || "Tool A";
-      const b = reviews[1]?.name || existingNames[0] || "Tool B";
-      const comparison = await generateComparisonWithGemini(a, b);
-      comparison.slug = uniqueSlug(comparison.slug, taken);
-      return { reviews, comparisons: [comparison], source: "gemini" };
+      const comparisons: GeneratedComparison[] = [];
+      if (reviews.length >= 2) {
+        const comparison = await generateComparisonWithGemini(reviews[0].name, reviews[1].name);
+        comparison.slug = uniqueSlug(comparison.slug, taken);
+        comparisons.push(comparison);
+      }
+      return { reviews, comparisons, source: "gemini" };
     } catch {
       // fall through to structured local drafts
     }
   }
 
-  const reviews = (unused.length >= 2 ? unused : seedUnused)
-    .slice(0, 2)
-    .map((item) => fallbackReview("name" in item ? item.name : String(item), taken));
-  while (reviews.length < 2) {
-    reviews.push(fallbackReview(`Forge Draft ${reviews.length + 1}`, taken));
-  }
-  const comparison = fallbackComparison(
-    reviews[0].name,
-    reviews[1]?.name || existingNames[0] || "Jasper AI",
-    taken,
-  );
-  return { reviews, comparisons: [comparison], source: "fallback" };
+  const reviews = targets.map((name) => fallbackReview(name, taken));
+  const comparisons =
+    reviews.length >= 2
+      ? [fallbackComparison(reviews[0].name, reviews[1].name, taken)]
+      : [];
+  return { reviews, comparisons, source: "fallback" };
 }
 
 export function generateReviewFallback(input: string, taken: Set<string>) {

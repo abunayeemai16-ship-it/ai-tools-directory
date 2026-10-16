@@ -9,6 +9,7 @@ import { DEFAULT_ADMIN_PASSWORD, hashPassword, maskGeminiKey, newSessionSecret }
 import { CORE_CATALOG, catalogSlug, expandCatalogEntry } from "@/lib/data/catalog";
 import { comparisons as seedComparisons } from "@/lib/data/comparisons";
 import { seedComparisonDrafts, seedToolDrafts } from "@/lib/data/seed-drafts";
+import catalogSnapshotSeed from "@/lib/data/catalog-snapshot.json";
 import { tools as seedTools } from "@/lib/data/tools";
 import { clampRating, clampReviewCount, slugify } from "@/lib/utils";
 import { isAdLive } from "@/lib/ads";
@@ -40,6 +41,17 @@ import {
   DEFAULT_HOME_TITLE,
 } from "@/lib/site";
 
+function usesPostgres() {
+  return Boolean((process.env.DATABASE_URL || process.env.POSTGRES_URL || "").trim());
+}
+
+async function postgresStore() {
+  if (!usesPostgres()) {
+    throw new Error("DATABASE_URL is not set");
+  }
+  return import("./postgres-store");
+}
+
 const DB_PATH = path.join(process.cwd(), "data", "db.json");
 // Heartbeats rewrite this file often. Keep it out of data/ and .next so Turbopack
 // does not treat analytics I/O as a source change (compile/reload loop).
@@ -53,16 +65,40 @@ const ANALYTICS_PATH = path.join(
 const LIVE_WINDOW_MS = 45_000;
 
 let memory: Database | null = null;
+let memoryLoadedAt = 0;
 let writeChain: Promise<unknown> = Promise.resolve();
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
 let lastCatalogSnap = "";
 let lastAnalyticsSnap = "";
+let vercelPersistWarned = false;
+const POSTGRES_MEMORY_TTL_MS = 15_000;
+
+function analyticsSnapshot(db: Database) {
+  return JSON.stringify({
+    sessions: db.sessions,
+    pageviews: db.pageviews,
+  });
+}
 
 async function writeIfChanged(filePath: string, snapshot: string, last: string) {
   if (snapshot === last) return last;
-  await mkdir(path.dirname(filePath), { recursive: true });
-  await writeFile(filePath, snapshot, "utf8");
-  return snapshot;
+  try {
+    await mkdir(path.dirname(filePath), { recursive: true });
+    await writeFile(filePath, snapshot, "utf8");
+    return snapshot;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EROFS" || code === "EACCES" || process.env.VERCEL) {
+      if (!vercelPersistWarned) {
+        vercelPersistWarned = true;
+        console.warn(
+          "[forge] File database is not writable. Set DATABASE_URL to your Supabase Postgres URI on Vercel.",
+        );
+      }
+      return snapshot;
+    }
+    throw error;
+  }
 }
 
 function catalogSnapshot(db: Database) {
@@ -88,23 +124,31 @@ function catalogSnapshot(db: Database) {
 
 async function persistCatalog() {
   if (!memory) return;
-  lastCatalogSnap = await writeIfChanged(
-    DB_PATH,
-    catalogSnapshot(memory),
-    lastCatalogSnap,
-  );
+  const snap = catalogSnapshot(memory);
+  if (snap === lastCatalogSnap) return;
+  if (usesPostgres()) {
+    const { savePostgresCatalog } = await postgresStore();
+    await savePostgresCatalog(JSON.parse(snap) as Record<string, unknown>);
+    lastCatalogSnap = snap;
+    return;
+  }
+  lastCatalogSnap = await writeIfChanged(DB_PATH, snap, lastCatalogSnap);
 }
 
 async function persistAnalytics() {
   if (!memory) return;
-  lastAnalyticsSnap = await writeIfChanged(
-    ANALYTICS_PATH,
-    JSON.stringify({
+  const snap = analyticsSnapshot(memory);
+  if (snap === lastAnalyticsSnap) return;
+  if (usesPostgres()) {
+    const { savePostgresAnalytics } = await postgresStore();
+    await savePostgresAnalytics({
       sessions: memory.sessions,
       pageviews: memory.pageviews,
-    }),
-    lastAnalyticsSnap,
-  );
+    });
+    lastAnalyticsSnap = snap;
+    return;
+  }
+  lastAnalyticsSnap = await writeIfChanged(ANALYTICS_PATH, snap, lastAnalyticsSnap);
 }
 
 function scheduleFlush() {
@@ -205,23 +249,86 @@ function normalizeComparison(
   };
 }
 
+function toolNameKey(value: string) {
+  return value.trim().toLowerCase();
+}
+
+function comparisonPairKey(item: { toolASlug: string; toolBSlug: string }) {
+  return `${item.toolASlug}::${item.toolBSlug}`;
+}
+
+function uniqueLatest<T>(items: T[], keyFn: (item: T) => string) {
+  const seen = new Set<string>();
+  const unique: T[] = [];
+  for (const item of items) {
+    const key = keyFn(item);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    unique.push(item);
+  }
+  return unique;
+}
+
+function pruneDuplicateDrafts(db: Database) {
+  let dirty = false;
+  const draftToolsNewestFirst = [...db.tools]
+    .filter((tool) => tool.status === "draft")
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  const keepTools = uniqueLatest(draftToolsNewestFirst, (tool) => toolNameKey(tool.name));
+  const keepToolSlugs = new Set(keepTools.map((tool) => tool.slug));
+  const droppedTools = draftToolsNewestFirst.filter((tool) => !keepToolSlugs.has(tool.slug));
+  if (droppedTools.length) {
+    const rewrite = new Map(
+      droppedTools.map((tool) => {
+        const kept = keepTools.find((item) => toolNameKey(item.name) === toolNameKey(tool.name));
+        return [tool.slug, kept?.slug || tool.slug] as const;
+      }),
+    );
+    for (const comparison of db.comparisons) {
+      comparison.toolASlug = rewrite.get(comparison.toolASlug) || comparison.toolASlug;
+      comparison.toolBSlug = rewrite.get(comparison.toolBSlug) || comparison.toolBSlug;
+    }
+    const drop = new Set(droppedTools.map((tool) => tool.slug));
+    db.tools = db.tools.filter((tool) => !drop.has(tool.slug));
+    dirty = true;
+  }
+
+  const draftComparisonsNewestFirst = [...db.comparisons]
+    .filter((item) => item.status === "draft")
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  const keepComparisons = uniqueLatest(draftComparisonsNewestFirst, comparisonPairKey);
+  const keepComparisonSlugs = new Set(keepComparisons.map((item) => item.slug));
+  const nextComparisons = db.comparisons.filter(
+    (item) => item.status !== "draft" || keepComparisonSlugs.has(item.slug),
+  );
+  if (nextComparisons.length !== db.comparisons.length) {
+    db.comparisons = nextComparisons;
+    dirty = true;
+  }
+  return dirty;
+}
+
 function injectSeedDrafts(db: Database) {
   let added = false;
   for (const draft of seedToolDrafts) {
     const taken = db.tools.some(
       (tool) =>
         tool.slug === draft.slug ||
-        tool.name.trim().toLowerCase() === draft.name.trim().toLowerCase(),
+        toolNameKey(tool.name) === toolNameKey(draft.name),
     );
     if (taken) continue;
     db.tools.push(normalizeTool(draft));
     added = true;
   }
   for (const draft of seedComparisonDrafts) {
-    if (!db.comparisons.some((item) => item.slug === draft.slug)) {
-      db.comparisons.push(normalizeComparison(draft));
-      added = true;
-    }
+    const taken = db.comparisons.some(
+      (item) =>
+        item.slug === draft.slug ||
+        comparisonPairKey(item) === comparisonPairKey(draft),
+    );
+    if (taken) continue;
+    db.comparisons.push(normalizeComparison(draft));
+    added = true;
   }
   return added;
 }
@@ -386,13 +493,30 @@ export function toPublicGeminiKey(key: GeminiApiKey): GeminiKeyPublic {
   return { ...rest, maskedKey: maskGeminiKey(key.key) };
 }
 
+function snapshotCatalog() {
+  const raw = catalogSnapshotSeed as Partial<Database>;
+  const tools = Array.isArray(raw.tools) ? raw.tools.map((tool) => normalizeTool(tool)) : [];
+  if (tools.length < 100) return null;
+  return {
+    tools,
+    comparisons: Array.isArray(raw.comparisons)
+      ? raw.comparisons.map((item) => normalizeComparison(item))
+      : [],
+    categories:
+      Array.isArray(raw.categories) && raw.categories.length
+        ? raw.categories.map((item, index) => normalizeCategory(item, index))
+        : DEFAULT_CATEGORIES.map((item) => ({ ...item })),
+  };
+}
+
 function emptyDb(): Database {
+  const snap = snapshotCatalog();
   const db: Database = {
     settings: normalizeSettings({ epc: 0 }),
     geminiKeys: [],
-    categories: DEFAULT_CATEGORIES.map((item) => ({ ...item })),
-    tools: seedTools.map((tool) => normalizeTool(tool)),
-    comparisons: seedComparisons.map((item) => normalizeComparison(item)),
+    categories: snap?.categories ?? DEFAULT_CATEGORIES.map((item) => ({ ...item })),
+    tools: snap?.tools ?? seedTools.map((tool) => normalizeTool(tool)),
+    comparisons: snap?.comparisons ?? seedComparisons.map((item) => normalizeComparison(item)),
     submissions: [],
     sessions: [],
     pageviews: [],
@@ -401,7 +525,7 @@ function emptyDb(): Database {
     rankChecks: [],
     ads: [],
   };
-  injectSeedDrafts(db);
+  if (!snap) injectSeedDrafts(db);
   ensureCoreCatalog(db);
   return db;
 }
@@ -455,7 +579,68 @@ async function readAnalyticsSlice() {
   }
 }
 
+async function seedFromLocalFile(): Promise<Database> {
+  try {
+    const text = await readFile(DB_PATH, "utf8");
+    return normalizeDb(JSON.parse(text) as Partial<Database>);
+  } catch {
+    return emptyDb();
+  }
+}
+
+async function applyRuntimeDefaults(db: Database) {
+  let dirty = false;
+  if (!db.settings.adminPasswordHash) {
+    db.settings.adminPasswordHash = await hashPassword(DEFAULT_ADMIN_PASSWORD);
+    dirty = true;
+  }
+  if (!db.settings.sessionSecret) {
+    db.settings.sessionSecret = newSessionSecret();
+    dirty = true;
+  }
+  if (!db.categories.length) {
+    db.categories = DEFAULT_CATEGORIES.map((item) => ({ ...item }));
+    dirty = true;
+  }
+  if (ensureCoreCatalog(db)) dirty = true;
+  if (pruneDuplicateDrafts(db)) dirty = true;
+  if (!Array.isArray(db.ads)) {
+    db.ads = [];
+    dirty = true;
+  }
+  if (!Array.isArray(db.sessions)) {
+    db.sessions = [];
+    dirty = true;
+  }
+  if (!Array.isArray(db.pageviews)) {
+    db.pageviews = [];
+    dirty = true;
+  }
+  return dirty;
+}
+
+async function hydrateFromRaw(raw: Partial<Database> | null) {
+  if (usesPostgres()) {
+    const missing = !raw;
+    const db = raw ? normalizeDb(raw) : emptyDb();
+    const dirty = (await applyRuntimeDefaults(db)) || missing;
+    return { db, dirty };
+  }
+  const missing = !raw;
+  const db = raw ? normalizeDb(raw) : await seedFromLocalFile();
+  const dirty = (await applyRuntimeDefaults(db)) || missing;
+  return { db, dirty };
+}
+
 async function readFileDb(): Promise<Database> {
+  if (usesPostgres()) {
+    const { loadPostgresStore } = await postgresStore();
+    const raw = await loadPostgresStore();
+    const { db, dirty } = await hydrateFromRaw(raw);
+    lastCatalogSnap = dirty ? "" : catalogSnapshot(db);
+    lastAnalyticsSnap = analyticsSnapshot(db);
+    return db;
+  }
   try {
     const text = await readFile(DB_PATH, "utf8");
     const raw = JSON.parse(text) as Partial<Database>;
@@ -481,37 +666,20 @@ async function readFileDb(): Promise<Database> {
 }
 
 async function ensureMemory() {
-  let dirty = false;
-  if (!memory) {
+  if (process.env.VERCEL && !usesPostgres() && !vercelPersistWarned) {
+    vercelPersistWarned = true;
+    console.warn(
+      "[forge] DATABASE_URL is not set on Vercel. Set it to your Supabase Postgres URI so data persists.",
+    );
+  }
+  const postgresStale =
+    usesPostgres() && (!memory || Date.now() - memoryLoadedAt > POSTGRES_MEMORY_TTL_MS);
+  if (postgresStale || !memory) {
     memory = await readFileDb();
-    if (!memory.settings.adminPasswordHash) {
-      memory.settings.adminPasswordHash = await hashPassword(DEFAULT_ADMIN_PASSWORD);
-      dirty = true;
-    }
-    if (!memory.settings.sessionSecret) {
-      memory.settings.sessionSecret = newSessionSecret();
-      dirty = true;
-    }
-    if (!memory.categories.length) {
-      memory.categories = DEFAULT_CATEGORIES.map((item) => ({ ...item }));
-      dirty = true;
-    }
-    if (lastCatalogSnap === "") dirty = true;
+    memoryLoadedAt = Date.now();
   }
-  if (ensureCoreCatalog(memory)) dirty = true;
-  if (!Array.isArray(memory.ads)) {
-    memory.ads = [];
-    dirty = true;
-  }
-  if (!Array.isArray(memory.sessions)) {
-    memory.sessions = [];
-    dirty = true;
-  }
-  if (!Array.isArray(memory.pageviews)) {
-    memory.pageviews = [];
-    dirty = true;
-  }
-  if (dirty) await persistCatalog();
+  const dirty = await applyRuntimeDefaults(memory);
+  if (dirty || lastCatalogSnap === "") await persistCatalog();
   return memory;
 }
 
@@ -520,11 +688,27 @@ export function withDb<T>(
   options?: { immediate?: boolean },
 ): Promise<T> {
   const run = writeChain.then(async () => {
+    if (usesPostgres() && options?.immediate !== false) {
+      const { withPostgresTransaction } = await postgresStore();
+      return withPostgresTransaction(async (raw) => {
+        const { db } = await hydrateFromRaw(raw);
+        const result = await fn(db);
+        memory = db;
+        memoryLoadedAt = Date.now();
+        lastCatalogSnap = catalogSnapshot(db);
+        lastAnalyticsSnap = analyticsSnapshot(db);
+        return { result, next: db };
+      });
+    }
     const db = await ensureMemory();
     const result = await fn(db);
     memory = db;
     if (options?.immediate === false) {
-      scheduleFlush();
+      if (usesPostgres()) {
+        await persistAnalytics();
+      } else {
+        scheduleFlush();
+      }
     } else {
       if (flushTimer) {
         clearTimeout(flushTimer);
@@ -764,12 +948,18 @@ export async function getComparisonTools(
 
 export async function listDrafts() {
   const db = await readDb();
-  const tools = db.tools
-    .filter((tool) => tool.status === "draft")
-    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  const comparisons = db.comparisons
-    .filter((item) => item.status === "draft")
-    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  const tools = uniqueLatest(
+    db.tools
+      .filter((tool) => tool.status === "draft")
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
+    (tool) => toolNameKey(tool.name),
+  );
+  const comparisons = uniqueLatest(
+    db.comparisons
+      .filter((item) => item.status === "draft")
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
+    comparisonPairKey,
+  );
   return { tools, comparisons, count: tools.length + comparisons.length };
 }
 
@@ -1373,18 +1563,143 @@ export async function ingestCatalogTools(tools: Tool[]) {
   });
 }
 
+export type CatalogSyncResult = {
+  sourceTools: number;
+  addedTools: number;
+  addedComparisons: number;
+  addedCategories: number;
+  storeTools: number;
+  publishedTools: number;
+  added: Array<{ slug: string; name: string; status: PublishStatus }>;
+};
+
+export async function syncCatalogFromSnapshot(
+  snapshot: Partial<Database>,
+): Promise<CatalogSyncResult> {
+  if (!usesPostgres()) {
+    throw new Error("DATABASE_URL is not set. Catalog sync writes to Supabase Postgres.");
+  }
+  const incomingTools = Array.isArray(snapshot.tools) ? snapshot.tools : [];
+  const incomingComparisons = Array.isArray(snapshot.comparisons) ? snapshot.comparisons : [];
+  const incomingCategories = Array.isArray(snapshot.categories) ? snapshot.categories : [];
+
+  return withDb((db) => {
+    const added: CatalogSyncResult["added"] = [];
+    const takenTools = new Set(
+      db.tools.flatMap((tool) => [tool.slug, toolNameKey(tool.name)]),
+    );
+    for (const raw of incomingTools) {
+      if (!raw?.slug && !raw?.name) continue;
+      const record = normalizeTool(raw);
+      if (takenTools.has(record.slug) || takenTools.has(toolNameKey(record.name))) continue;
+      db.tools.push(record);
+      takenTools.add(record.slug);
+      takenTools.add(toolNameKey(record.name));
+      added.push({ slug: record.slug, name: record.name, status: record.status });
+    }
+
+    let addedComparisons = 0;
+    const takenComparisons = new Set(
+      db.comparisons.flatMap((item) => [item.slug, comparisonPairKey(item)]),
+    );
+    for (const raw of incomingComparisons) {
+      if (!raw?.slug) continue;
+      const record = normalizeComparison(raw);
+      if (
+        takenComparisons.has(record.slug) ||
+        takenComparisons.has(comparisonPairKey(record))
+      ) {
+        continue;
+      }
+      db.comparisons.push(record);
+      takenComparisons.add(record.slug);
+      takenComparisons.add(comparisonPairKey(record));
+      addedComparisons += 1;
+    }
+
+    let addedCategories = 0;
+    const takenCategories = new Set(db.categories.map((item) => item.slug));
+    for (const raw of incomingCategories) {
+      if (!raw?.slug || takenCategories.has(raw.slug)) continue;
+      db.categories.push(normalizeCategory(raw, db.categories.length));
+      takenCategories.add(raw.slug);
+      addedCategories += 1;
+    }
+
+    return {
+      sourceTools: incomingTools.length,
+      addedTools: added.length,
+      addedComparisons,
+      addedCategories,
+      storeTools: db.tools.length,
+      publishedTools: db.tools.filter((tool) => tool.status === "published").length,
+      added,
+    };
+  });
+}
+
+export async function syncCatalogFromLocalFile(): Promise<CatalogSyncResult> {
+  const text = await readFile(DB_PATH, "utf8");
+  return syncCatalogFromSnapshot(JSON.parse(text) as Partial<Database>);
+}
+
+function findToolDraftIndex(db: Database, tool: Tool) {
+  const nameKey = toolNameKey(tool.name);
+  const draftByName = db.tools.findIndex(
+    (item) => item.status === "draft" && toolNameKey(item.name) === nameKey,
+  );
+  if (draftByName >= 0) return draftByName;
+  const draftSlug = tool.slug.endsWith("-draft") ? tool.slug : `${tool.slug}-draft`;
+  const draftBySlug = db.tools.findIndex(
+    (item) => item.status === "draft" && (item.slug === tool.slug || item.slug === draftSlug),
+  );
+  if (draftBySlug >= 0) return draftBySlug;
+  return db.tools.findIndex(
+    (item) => item.status === "draft" && slugify(item.name) === slugify(tool.name),
+  );
+}
+
 export async function saveToolDraft(review: GeneratedReview) {
   return withDb((db) => {
     const tool = toolFromGenerated(review, "draft");
-    const index = db.tools.findIndex((item) => item.slug === tool.slug);
-    if (index >= 0 && db.tools[index].status === "published") {
-      tool.slug = `${tool.slug}-draft`;
-      db.tools.unshift(tool);
-    } else if (index >= 0) {
-      db.tools[index] = { ...db.tools[index], ...tool, status: "draft" };
-    } else {
-      db.tools.unshift(tool);
+    const draftIndex = findToolDraftIndex(db, tool);
+    if (draftIndex >= 0) {
+      const previous = db.tools[draftIndex];
+      db.tools[draftIndex] = {
+        ...previous,
+        ...tool,
+        slug: previous.slug,
+        createdAt: previous.createdAt,
+        status: "draft",
+      };
+      return db.tools[draftIndex];
     }
+    const published = db.tools.find(
+      (item) =>
+        item.status === "published" &&
+        (item.slug === tool.slug || toolNameKey(item.name) === toolNameKey(tool.name)),
+    );
+    if (published) {
+      tool.slug = `${published.slug}-draft`;
+      const existingDraft = db.tools.findIndex((item) => item.slug === tool.slug);
+      if (existingDraft >= 0) {
+        db.tools[existingDraft] = {
+          ...db.tools[existingDraft],
+          ...tool,
+          slug: tool.slug,
+          status: "draft",
+        };
+        return db.tools[existingDraft];
+      }
+      db.tools.unshift(tool);
+      return tool;
+    }
+    const slugIndex = db.tools.findIndex((item) => item.slug === tool.slug);
+    if (slugIndex >= 0) {
+      db.tools[slugIndex] = { ...db.tools[slugIndex], ...tool, status: "draft" };
+      return db.tools[slugIndex];
+    }
+    db.tools.unshift(tool);
     return tool;
   });
 }
@@ -1397,9 +1712,34 @@ export async function publishTool(review: GeneratedReview) {
 export async function saveComparisonDraft(draft: GeneratedComparison) {
   return withDb((db) => {
     const comparison = comparisonFromGenerated(draft);
+    const pair = comparisonPairKey(comparison);
+    const draftIndex = db.comparisons.findIndex(
+      (item) => item.status === "draft" && comparisonPairKey(item) === pair,
+    );
+    if (draftIndex >= 0) {
+      const previous = db.comparisons[draftIndex];
+      db.comparisons[draftIndex] = {
+        ...previous,
+        ...comparison,
+        slug: previous.slug,
+        createdAt: previous.createdAt,
+        status: "draft",
+      };
+      return db.comparisons[draftIndex];
+    }
     const index = db.comparisons.findIndex((item) => item.slug === comparison.slug);
     if (index >= 0 && db.comparisons[index].status === "published") {
       comparison.slug = `${comparison.slug}-draft`;
+      const existingDraft = db.comparisons.findIndex((item) => item.slug === comparison.slug);
+      if (existingDraft >= 0) {
+        db.comparisons[existingDraft] = {
+          ...db.comparisons[existingDraft],
+          ...comparison,
+          slug: comparison.slug,
+          status: "draft",
+        };
+        return db.comparisons[existingDraft];
+      }
       db.comparisons.unshift(comparison);
     } else if (index >= 0) {
       db.comparisons[index] = { ...db.comparisons[index], ...comparison, status: "draft" };

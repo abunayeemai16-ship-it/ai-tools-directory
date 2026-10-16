@@ -50,10 +50,14 @@ export function AdminSidebar({
 
   useEffect(() => {
     async function load() {
-      const res = await fetch("/api/drafts", { cache: "no-store" });
-      if (!res.ok) return;
-      const data = (await res.json()) as { count?: number };
-      setDraftCount(Number(data.count) || 0);
+      try {
+        const res = await fetch("/api/drafts", { cache: "no-store" });
+        if (!res.ok) return;
+        const data = (await res.json()) as { count?: number };
+        setDraftCount(Number(data.count) || 0);
+      } catch {
+        // Slow/offline admin poll must not crash the overlay.
+      }
     }
     void load();
     const id = window.setInterval(() => void load(), 15_000);

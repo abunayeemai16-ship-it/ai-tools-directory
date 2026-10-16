@@ -148,12 +148,16 @@ export function AdsManager({
   const [notice, setNotice] = useState("");
 
   const load = useCallback(async () => {
-    const res = await fetch("/api/admin/ads", { cache: "no-store" });
-    if (!res.ok) return;
-    const data = (await res.json()) as Payload;
-    setAds(data.ads);
-    setTools(data.tools);
-    setCategories(data.categories);
+    try {
+      const res = await fetch("/api/admin/ads", { cache: "no-store" });
+      if (!res.ok) return;
+      const data = (await res.json()) as Payload;
+      setAds(data.ads);
+      setTools(data.tools);
+      setCategories(data.categories);
+    } catch {
+      // Ads poll can fail while the catalog is busy.
+    }
   }, []);
 
   useEffect(() => {

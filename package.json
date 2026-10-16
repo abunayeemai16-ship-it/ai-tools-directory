@@ -6,12 +6,15 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "sync:catalog": "node scripts/sync-catalog.mjs",
+    "sync:snapshot": "node -e \"const fs=require('fs');const d=require('./data/db.json');fs.writeFileSync('src/lib/data/catalog-snapshot.json',JSON.stringify({categories:d.categories,tools:d.tools,comparisons:d.comparisons}));\""
   },
   "dependencies": {
     "clsx": "^2.1.1",
     "lucide-react": "^1.57.0",
     "next": "16.4.0",
+    "pg": "^8.23.1",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "tailwind-merge": "^3.7.0"
@@ -19,6 +22,7 @@
   "devDependencies": {
     "@tailwindcss/turbopack": "^4",
     "@types/node": "^20",
+    "@types/pg": "^8.23.1",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",

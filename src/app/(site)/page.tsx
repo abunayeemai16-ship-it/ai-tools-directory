@@ -22,6 +22,7 @@ function toCard(tool: Tool): Tool {
 }
 
 export const instant = false;
+// Cache Components: do not export revalidate/dynamic — live() via connection() runs at request time.
 
 export async function generateMetadata(): Promise<Metadata> {
   await live();

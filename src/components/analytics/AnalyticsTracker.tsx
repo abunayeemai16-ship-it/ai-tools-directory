@@ -32,24 +32,38 @@ function shouldRecordPageview(sessionIdValue: string, path: string) {
   return true;
 }
 
+async function ping(url: string, body: unknown) {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 8_000);
+  try {
+    await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } catch {
+    // Compiling, slow DB, or aborted keepalive must not surface a Next overlay.
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
 export function AnalyticsTracker() {
   const pathname = usePathname();
   const idRef = useRef<string | null>(null);
 
   useEffect(() => {
     idRef.current = sessionId();
-    const payload = () =>
-      JSON.stringify({
+    let inFlight = false;
+    const beat = () => {
+      if (inFlight) return;
+      inFlight = true;
+      void ping("/api/analytics/heartbeat", {
         sessionId: idRef.current,
         ...hints(),
-      });
-
-    const beat = () => {
-      void fetch("/api/analytics/heartbeat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: payload(),
-        keepalive: true,
+      }).finally(() => {
+        inFlight = false;
       });
     };
 
@@ -68,15 +82,10 @@ export function AnalyticsTracker() {
   useEffect(() => {
     if (!idRef.current) idRef.current = sessionId();
     if (!shouldRecordPageview(idRef.current, pathname)) return;
-    void fetch("/api/analytics/pageview", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        sessionId: idRef.current,
-        path: pathname,
-        ...hints(),
-      }),
-      keepalive: true,
+    void ping("/api/analytics/pageview", {
+      sessionId: idRef.current,
+      path: pathname,
+      ...hints(),
     });
   }, [pathname]);
 
