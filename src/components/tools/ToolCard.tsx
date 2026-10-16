@@ -36,6 +36,7 @@ export function ToolCard({
         category={tool.category}
         color={tool.brandColor}
         headline={headline}
+        website={tool.officialUrl || tool.website}
       />
       <div className="flex flex-1 flex-col p-5">
       <div className="flex items-start gap-3">
