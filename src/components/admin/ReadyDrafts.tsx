@@ -31,15 +31,37 @@ function uniqueDraftComparisons(items: Comparison[]) {
   });
 }
 
+function looksLikeHtml(text: string) {
+  const start = text.trimStart().slice(0, 16).toLowerCase();
+  return start.startsWith("<!doctype") || start.startsWith("<html") || start.startsWith("<");
+}
+
+async function readJson<T>(res: Response, fallback: string): Promise<T> {
+  const text = await res.text();
+  if (!text.trim() || looksLikeHtml(text)) {
+    throw new Error(
+      res.status >= 500
+        ? `${fallback} (server timed out or returned HTML instead of JSON). Try again.`
+        : fallback,
+    );
+  }
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new Error(`${fallback} (response was not valid JSON).`);
+  }
+}
+
 async function errorFrom(res: Response, fallback: string) {
   const text = await res.text();
+  if (!text.trim() || looksLikeHtml(text)) return fallback;
   try {
     const payload = JSON.parse(text) as { error?: string };
     if (payload.error?.trim()) return payload.error.trim();
   } catch {
     /* use fallback */
   }
-  return text.trim() || fallback;
+  return fallback;
 }
 
 function uniqueDrafts(payload: DraftsPayload): DraftsPayload {
@@ -66,7 +88,9 @@ export function ReadyDrafts({
     try {
       const res = await fetch("/api/drafts", { cache: "no-store" });
       if (!res.ok) return;
-      setData(uniqueDrafts((await res.json()) as DraftsPayload));
+      const payload = await readJson<DraftsPayload>(res, "Could not refresh drafts");
+      if (!Array.isArray(payload.tools)) return;
+      setData(uniqueDrafts(payload));
     } catch {
       // Draft poll can fail while Postgres is busy; keep the last list.
     }
@@ -83,7 +107,10 @@ export function ReadyDrafts({
     setNotice("");
     try {
       const res = await fetch("/api/admin/auto-draft", { method: "POST" });
-      const payload = (await res.json()) as { error?: string; source?: string; tools?: Tool[] };
+      const payload = await readJson<{ error?: string; source?: string; tools?: Tool[] }>(
+        res,
+        "Auto-draft failed",
+      );
       if (!res.ok) throw new Error(payload.error || "Auto-draft failed");
       const added = payload.tools?.length ?? 0;
       setNotice(
@@ -115,12 +142,12 @@ export function ReadyDrafts({
     setNotice("");
     try {
       const res = await fetch("/api/admin/drafts/approve-all", { method: "POST" });
-      const payload = (await res.json()) as {
+      const payload = await readJson<{
         error?: string;
         count?: number;
         tools?: number;
         comparisons?: number;
-      };
+      }>(res, "Approve all failed");
       if (!res.ok) throw new Error(payload.error || "Approve all failed");
       const tools = payload.tools ?? 0;
       const comparisons = payload.comparisons ?? 0;

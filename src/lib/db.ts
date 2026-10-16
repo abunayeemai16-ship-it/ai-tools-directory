@@ -1841,23 +1841,6 @@ export async function approveComparison(slug: string) {
   });
 }
 
-function catalogPayload(db: Database) {
-  return {
-    settings: db.settings,
-    geminiKeys: db.geminiKeys,
-    categories: db.categories,
-    tools: db.tools,
-    comparisons: db.comparisons,
-    submissions: db.submissions,
-    clicks: db.clicks,
-    commissions: db.commissions,
-    rankChecks: db.rankChecks,
-    ads: db.ads,
-    sessions: db.sessions,
-    pageviews: db.pageviews,
-  };
-}
-
 export async function approveAllDrafts() {
   const result = await withDb((db) => {
     pruneDuplicateDrafts(db);
@@ -1910,11 +1893,6 @@ export async function approveAllDrafts() {
       published: db.tools.filter((tool) => tool.status !== "draft").length,
     };
   });
-  if (usesPostgres() && memory) {
-    const { savePostgresCatalog } = await postgresStore();
-    await savePostgresCatalog(catalogPayload(memory));
-    lastCatalogSnap = "__postgres__";
-  }
   return result;
 }
 
