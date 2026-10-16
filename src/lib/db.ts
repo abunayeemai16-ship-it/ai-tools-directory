@@ -713,16 +713,24 @@ export function withDb<T>(
 ): Promise<T> {
   const run = writeChain.then(async () => {
     if (usesPostgres() && options?.immediate !== false) {
-      const { withPostgresTransaction } = await postgresStore();
-      return withPostgresTransaction(async (raw) => {
-        const { db } = await hydrateFromRaw(raw);
-        const result = await fn(db);
-        memory = db;
-        memoryLoadedAt = performance.now();
-        lastCatalogSnap = catalogSnapshot(db);
-        lastAnalyticsSnap = analyticsSnapshot(db);
-        return { result, next: db };
-      });
+      try {
+        const { withPostgresTransaction } = await postgresStore();
+        return await withPostgresTransaction(async (raw) => {
+          const { db } = await hydrateFromRaw(raw);
+          const result = await fn(db);
+          memory = db;
+          memoryLoadedAt = performance.now();
+          lastCatalogSnap = catalogSnapshot(db);
+          lastAnalyticsSnap = analyticsSnapshot(db);
+          return { result, next: db };
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Database write failed";
+        if (/Cannot find module ['"]pg['"]/i.test(message)) {
+          throw new Error("Postgres driver was not bundled. Retry after the latest deploy.");
+        }
+        throw error instanceof Error ? error : new Error(message);
+      }
     }
     const db = await ensureMemory();
     const result = await fn(db);

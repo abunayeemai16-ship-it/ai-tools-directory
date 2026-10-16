@@ -31,6 +31,17 @@ function uniqueDraftComparisons(items: Comparison[]) {
   });
 }
 
+async function errorFrom(res: Response, fallback: string) {
+  const text = await res.text();
+  try {
+    const payload = JSON.parse(text) as { error?: string };
+    if (payload.error?.trim()) return payload.error.trim();
+  } catch {
+    /* use fallback */
+  }
+  return text.trim() || fallback;
+}
+
 function uniqueDrafts(payload: DraftsPayload): DraftsPayload {
   const tools = uniqueDraftTools(payload.tools);
   const comparisons = uniqueDraftComparisons(payload.comparisons);
@@ -167,7 +178,7 @@ export function ReadyDrafts({
             try {
               if (action === "delete") {
                 const res = await fetch(`/api/tools/${openTool.slug}`, { method: "DELETE" });
-                if (!res.ok) throw new Error("Delete failed");
+                if (!res.ok) throw new Error(await errorFrom(res, "Delete failed"));
               } else {
                 const res = await fetch(`/api/tools/${openTool.slug}`, {
                   method: "PATCH",
@@ -176,7 +187,7 @@ export function ReadyDrafts({
                     action === "publish" ? { ...openTool, action: "publish" } : openTool,
                   ),
                 });
-                if (!res.ok) throw new Error("Save failed");
+                if (!res.ok) throw new Error(await errorFrom(res, "Save failed"));
               }
               setOpenTool(null);
               await load();
@@ -201,7 +212,7 @@ export function ReadyDrafts({
             try {
               if (action === "delete") {
                 const res = await fetch(`/api/comparisons/${openVs.slug}`, { method: "DELETE" });
-                if (!res.ok) throw new Error("Delete failed");
+                if (!res.ok) throw new Error(await errorFrom(res, "Delete failed"));
               } else {
                 const res = await fetch(`/api/comparisons/${openVs.slug}`, {
                   method: "PATCH",
@@ -210,7 +221,7 @@ export function ReadyDrafts({
                     action === "publish" ? { ...openVs, action: "publish" } : openVs,
                   ),
                 });
-                if (!res.ok) throw new Error("Save failed");
+                if (!res.ok) throw new Error(await errorFrom(res, "Save failed"));
               }
               setOpenVs(null);
               await load();

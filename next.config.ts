@@ -5,6 +5,16 @@ const nextConfig: NextConfig = {
   cacheComponents: true,
   partialPrefetching: true,
   serverExternalPackages: ["pg"],
+  outputFileTracingIncludes: {
+    "/*": [
+      "./node_modules/pg/**/*",
+      "./node_modules/pg-pool/**/*",
+      "./node_modules/pg-connection-string/**/*",
+      "./node_modules/pg-protocol/**/*",
+      "./node_modules/pg-types/**/*",
+      "./node_modules/pgpass/**/*",
+    ],
+  },
   turbopack: {
     rules: {
       "*.css": {

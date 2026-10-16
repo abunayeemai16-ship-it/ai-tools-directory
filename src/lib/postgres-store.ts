@@ -1,16 +1,8 @@
-import { createRequire } from "node:module";
+import pg from "pg";
 import type { Pool, PoolClient } from "pg";
 import type { Database } from "@/lib/types";
 
-const nodeRequire = createRequire(import.meta.url);
-
-function loadPg() {
-  return nodeRequire(
-    /* webpackIgnore: true */
-    /* turbopackIgnore: true */
-    "pg",
-  ) as typeof import("pg");
-}
+const { Pool: PgPool } = pg;
 
 const CATALOG_KEY = "catalog";
 const ANALYTICS_KEY = "analytics";
@@ -48,12 +40,11 @@ function getPool() {
     throw new Error("DATABASE_URL is not set");
   }
   const local = /localhost|127\.0\.0\.1/i.test(url);
-  const { Pool: PgPool } = loadPg();
   pool = new PgPool({
     connectionString: connectionStringWithoutSslMode(url),
     max: process.env.VERCEL ? 1 : 4,
     idleTimeoutMillis: 10_000,
-    connectionTimeoutMillis: 8_000,
+    connectionTimeoutMillis: process.env.VERCEL ? 3_000 : 8_000,
     ssl: local ? undefined : { rejectUnauthorized: false },
   });
   pool.on("error", (error) => {

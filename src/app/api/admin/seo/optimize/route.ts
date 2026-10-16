@@ -36,6 +36,8 @@ async function loadGemini() {
   }
 }
 
+const GEMINI_MS = process.env.VERCEL ? 2_500 : 20_000;
+
 async function withTimeout<T>(promise: Promise<T>, ms: number) {
   return Promise.race([
     promise,
@@ -55,10 +57,11 @@ async function toolUpgrade(
   },
   fallback: SeoToolUpgrade,
 ): Promise<SeoToolUpgrade> {
+  if (process.env.VERCEL) return fallback;
   const gemini = await loadGemini();
   if (!isGeminiFn(gemini?.optimizeToolSeoWithGemini)) return fallback;
   try {
-    return (await withTimeout(gemini.optimizeToolSeoWithGemini(input), 20_000)) as SeoToolUpgrade;
+    return (await withTimeout(gemini.optimizeToolSeoWithGemini(input), GEMINI_MS)) as SeoToolUpgrade;
   } catch {
     return fallback;
   }
@@ -68,12 +71,13 @@ async function comparisonUpgrade(
   input: { aName: string; bName: string; keyword: string; verdict: string },
   fallback: SeoComparisonUpgrade,
 ): Promise<SeoComparisonUpgrade> {
+  if (process.env.VERCEL) return fallback;
   const gemini = await loadGemini();
   if (!isGeminiFn(gemini?.optimizeComparisonSeoWithGemini)) return fallback;
   try {
     return (await withTimeout(
       gemini.optimizeComparisonSeoWithGemini(input),
-      20_000,
+      GEMINI_MS,
     )) as SeoComparisonUpgrade;
   } catch {
     return fallback;
@@ -84,10 +88,11 @@ async function homeUpgrade(
   input: { toolCount: number; currentTitle: string; currentDescription: string },
   fallback: SeoHomeUpgrade,
 ): Promise<SeoHomeUpgrade> {
+  if (process.env.VERCEL) return fallback;
   const gemini = await loadGemini();
   if (!isGeminiFn(gemini?.optimizeHomeSeoWithGemini)) return fallback;
   try {
-    return (await withTimeout(gemini.optimizeHomeSeoWithGemini(input), 20_000)) as SeoHomeUpgrade;
+    return (await withTimeout(gemini.optimizeHomeSeoWithGemini(input), GEMINI_MS)) as SeoHomeUpgrade;
   } catch {
     return fallback;
   }
