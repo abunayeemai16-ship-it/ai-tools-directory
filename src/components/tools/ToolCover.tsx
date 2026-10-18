@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { useState } from "react";
 import { ToolLogo } from "@/components/tools/ToolLogo";
@@ -19,6 +20,7 @@ export function ToolCover({
   color,
   headline,
   website,
+  eager = false,
 }: {
   name: string;
   slug: string;
@@ -26,6 +28,8 @@ export function ToolCover({
   color: string;
   headline: string;
   website: string;
+  /** Above-the-fold covers load immediately; the rest stay lazy. */
+  eager?: boolean;
 }) {
   const [failed, setFailed] = useState(false);
   const src = screenshotUrl(name, website);
@@ -45,12 +49,14 @@ export function ToolCover({
       />
       {showShot ? (
         <>
-          {/* eslint-disable-next-line @next/next/no-img-element -- remote screenshot service, not a static asset */}
-          <img
+          <Image
             src={src}
             alt={`${name} website preview`}
-            loading="lazy"
-            decoding="async"
+            width={800}
+            height={500}
+            sizes="(min-width: 1024px) 360px, (min-width: 640px) 50vw, 100vw"
+            loading={eager ? "eager" : "lazy"}
+            fetchPriority={eager ? "high" : "auto"}
             onError={() => setFailed(true)}
             className="absolute inset-0 h-full w-full object-cover object-top transition duration-300 group-hover:scale-[1.02]"
           />

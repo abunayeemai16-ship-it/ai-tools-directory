@@ -274,13 +274,14 @@ export function DirectoryExplorer({
                 .map((ad) => ad.id)}
             />
             <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {shown.map((tool) => (
+              {shown.map((tool, index) => (
                 <ToolCard
                   key={tool.slug}
                   tool={tool}
                   categories={categories}
                   spotlight={pinnedSlugs.has(tool.slug)}
                   spotlightLabel={pinnedBadge.get(tool.slug) || "Partner Spotlight"}
+                  eager={index < 3}
                 />
               ))}
             </div>

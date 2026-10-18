@@ -4,9 +4,8 @@ import { BarChart3, Check, Globe2, Layers, ShieldCheck, Sparkles } from "lucide-
 import { AdvertiseCheckout } from "@/components/advertise/AdvertiseCheckout";
 import { HOMEPAGE_FEATURED } from "@/lib/advertise";
 import { countryName } from "@/lib/country";
-import { getAdvertiseStats, getFeaturedAvailability } from "@/lib/db";
-import { live } from "@/lib/live";
 import { paypalClientId, paypalConfigured } from "@/lib/paypal";
+import { getAdvertiseData } from "@/lib/public-data";
 import { formatNumber } from "@/lib/utils";
 
 export const instant = false;
@@ -36,8 +35,7 @@ function formatDate(iso: string) {
 }
 
 export default async function AdvertisePage() {
-  await live();
-  const [stats, availability] = await Promise.all([getAdvertiseStats(), getFeaturedAvailability()]);
+  const { stats, availability } = await getAdvertiseData();
   const clientId = paypalConfigured() ? paypalClientId() : "";
 
   const statCards = [

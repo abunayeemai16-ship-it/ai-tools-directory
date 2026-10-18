@@ -12,7 +12,9 @@ import { seedComparisonDrafts, seedToolDrafts } from "@/lib/data/seed-drafts";
 import catalogSnapshotSeed from "@/lib/data/catalog-snapshot.json";
 import { tools as seedTools } from "@/lib/data/tools";
 import { clampRating, clampReviewCount, slugify } from "@/lib/utils";
+import { revalidateTag } from "next/cache";
 import { isAdLive, publicAd } from "@/lib/ads";
+import { PUBLIC_CACHE_TAG } from "@/lib/cache-tags";
 import {
   HOMEPAGE_FEATURED,
   type AdvertiseAvailability,
@@ -71,13 +73,46 @@ const ANALYTICS_PATH = path.join(
 const LIVE_WINDOW_MS = 45_000;
 
 let memory: Database | null = null;
-let memoryLoadedAt = 0;
 let writeChain: Promise<unknown> = Promise.resolve();
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
 let lastCatalogSnap = "";
 let lastAnalyticsSnap = "";
 let vercelPersistWarned = false;
-const POSTGRES_MEMORY_TTL_MS = 15_000;
+// Postgres: memory is reused until the row's updated_at changes. Checking costs one tiny query.
+const VERSION_CHECK_MS = 30_000;
+const ANALYTICS_CHECK_MS = 60_000;
+let catalogVersion: string | null = null;
+let analyticsVersion: string | null = null;
+let catalogCheckedAt = 0;
+let analyticsCheckedAt = 0;
+
+function applyAnalytics(db: Database, slice: Partial<Pick<Database, "sessions" | "pageviews" | "clicks">>) {
+  if (Array.isArray(slice.sessions)) db.sessions = slice.sessions;
+  if (Array.isArray(slice.pageviews)) db.pageviews = slice.pageviews;
+  if (Array.isArray(slice.clicks)) db.clicks = slice.clicks;
+}
+
+function contentSnapshot(db: Database) {
+  return JSON.stringify([
+    db.settings,
+    db.geminiKeys,
+    db.categories,
+    db.tools,
+    db.comparisons,
+    db.submissions,
+    db.commissions,
+    db.rankChecks,
+    db.ads,
+  ]);
+}
+
+function revalidatePublicPages() {
+  try {
+    revalidateTag(PUBLIC_CACHE_TAG, { expire: 0 });
+  } catch {
+    // Outside a request scope (build, scripts): nothing cached to invalidate.
+  }
+}
 
 function analyticsSnapshot(db: Database) {
   return JSON.stringify({
@@ -135,7 +170,8 @@ async function persistCatalog() {
   try {
     if (usesPostgres()) {
       const { savePostgresCatalog } = await postgresStore();
-      await savePostgresCatalog(JSON.parse(snap) as Record<string, unknown>);
+      const version = await savePostgresCatalog(JSON.parse(snap) as Record<string, unknown>);
+      if (version) catalogVersion = version;
       lastCatalogSnap = snap;
       return;
     }
@@ -147,19 +183,11 @@ async function persistCatalog() {
 }
 
 async function persistAnalytics() {
-  if (!memory) return;
+  // Postgres analytics are written event-by-event in SQL; never overwrite the row from memory.
+  if (!memory || usesPostgres()) return;
   const snap = analyticsSnapshot(memory);
   if (snap === lastAnalyticsSnap) return;
   try {
-    if (usesPostgres()) {
-      const { savePostgresAnalytics } = await postgresStore();
-      await savePostgresAnalytics({
-        sessions: memory.sessions,
-        pageviews: memory.pageviews,
-      });
-      lastAnalyticsSnap = snap;
-      return;
-    }
     lastAnalyticsSnap = await writeIfChanged(ANALYTICS_PATH, snap, lastAnalyticsSnap);
   } catch (error) {
     console.error("[forge] persistAnalytics failed", error);
@@ -657,16 +685,22 @@ async function hydrateFromRaw(raw: Partial<Database> | null) {
 
 async function readFileDb(): Promise<Database> {
   if (usesPostgres()) {
+    catalogCheckedAt = analyticsCheckedAt = performance.now();
     try {
-      const { loadPostgresStore } = await postgresStore();
-      const raw = await loadPostgresStore();
-      const { db } = await hydrateFromRaw(raw);
+      const store = await postgresStore();
+      const catalog = await store.loadCatalog();
+      const analytics = await store.loadAnalytics();
+      const { db } = await hydrateFromRaw(catalog.value);
+      applyAnalytics(db, analytics.value ?? {});
+      catalogVersion = catalog.version;
+      analyticsVersion = analytics.version;
       lastCatalogSnap = "__postgres__";
       lastAnalyticsSnap = analyticsSnapshot(db);
       return db;
     } catch (error) {
       console.error("[forge] Postgres catalog load failed, using bundled snapshot", error);
       const db = emptyDb();
+      catalogVersion = analyticsVersion = null;
       lastCatalogSnap = "__snapshot__";
       lastAnalyticsSnap = analyticsSnapshot(db);
       return db;
@@ -703,36 +737,93 @@ async function ensureMemory() {
       "[forge] DATABASE_URL is not set on Vercel. Set it to your Supabase Postgres URI so data persists.",
     );
   }
-  const postgresStale =
-    usesPostgres() &&
-    (!memory || performance.now() - memoryLoadedAt > POSTGRES_MEMORY_TTL_MS);
-  if (postgresStale || !memory) {
+  if (!memory) {
     memory = await readFileDb();
-    memoryLoadedAt = performance.now();
+  } else if (usesPostgres() && performance.now() - catalogCheckedAt > VERSION_CHECK_MS) {
+    await refreshCatalogIfChanged();
   }
   const dirty = await applyRuntimeDefaults(memory);
   if (dirty && !process.env.VERCEL) await persistCatalog();
   return memory;
 }
 
+async function refreshCatalogIfChanged() {
+  catalogCheckedAt = performance.now();
+  try {
+    const store = await postgresStore();
+    const versions = await store.readStoreVersions();
+    if (versions.catalog === catalogVersion) return;
+    const catalog = await store.loadCatalog();
+    const { db } = await hydrateFromRaw(catalog.value);
+    if (memory) applyAnalytics(db, memory);
+    memory = db;
+    catalogVersion = catalog.version;
+    lastCatalogSnap = "__postgres__";
+  } catch (error) {
+    console.error("[forge] Postgres catalog refresh failed, keeping cached copy", error);
+  }
+}
+
+async function refreshAnalyticsIfChanged() {
+  if (!usesPostgres() || !memory) return;
+  if (performance.now() - analyticsCheckedAt < ANALYTICS_CHECK_MS) return;
+  analyticsCheckedAt = performance.now();
+  try {
+    const store = await postgresStore();
+    const versions = await store.readStoreVersions();
+    if (versions.analytics === analyticsVersion) return;
+    const analytics = await store.loadAnalytics();
+    applyAnalytics(memory, analytics.value ?? {});
+    analyticsVersion = analytics.version;
+  } catch (error) {
+    console.error("[forge] Postgres analytics refresh failed, keeping cached copy", error);
+  }
+}
+
+type WriteOptions = {
+  immediate?: boolean;
+  /** Set false for writes that never change public pages (clicks, submissions, admin-only data). */
+  publicChange?: boolean;
+};
+
 export function withDb<T>(
   fn: (db: Database) => T | Promise<T>,
-  options?: { immediate?: boolean },
+  options?: WriteOptions,
 ): Promise<T> {
   const run = writeChain.then(async () => {
     if (usesPostgres() && options?.immediate !== false) {
+      const cached = memory;
+      let working = null as Database | null;
+      let changed = false;
       try {
-        const { withPostgresTransaction } = await postgresStore();
-        return await withPostgresTransaction(async (raw) => {
-          const { db } = await hydrateFromRaw(raw);
+        const { withCatalogTransaction } = await postgresStore();
+        const outcome = await withCatalogTransaction(catalogVersion, async (raw, reuseCached) => {
+          let db: Database;
+          if (reuseCached && cached) {
+            db = cached;
+          } else {
+            db = (await hydrateFromRaw(raw)).db;
+            if (cached) applyAnalytics(db, cached);
+          }
+          working = db;
+          const before = contentSnapshot(db);
           const result = await fn(db);
-          memory = db;
-          memoryLoadedAt = performance.now();
-          lastCatalogSnap = "__postgres__";
-          lastAnalyticsSnap = analyticsSnapshot(db);
-          return { result, next: db };
+          changed = contentSnapshot(db) !== before;
+          return { result, next: changed ? db : null };
         });
+        memory = working;
+        // A skipped write leaves memory ahead of Postgres; force a reload next time.
+        catalogVersion = changed && !outcome.written ? null : outcome.version;
+        catalogCheckedAt = performance.now();
+        lastCatalogSnap = "__postgres__";
+        if (outcome.written && options?.publicChange !== false) revalidatePublicPages();
+        return outcome.result;
       } catch (error) {
+        if (working === cached) {
+          // The in-memory copy may hold uncommitted edits; reload on next access.
+          memory = null;
+          catalogVersion = null;
+        }
         const message = error instanceof Error ? error.message : "Database write failed";
         if (/Cannot find module ['"]pg['"]/i.test(message)) {
           throw new Error("Postgres driver was not bundled. Retry after the latest deploy.");
@@ -744,11 +835,7 @@ export function withDb<T>(
     const result = await fn(db);
     memory = db;
     if (options?.immediate === false) {
-      if (usesPostgres()) {
-        await persistAnalytics();
-      } else {
-        scheduleFlush();
-      }
+      if (!usesPostgres()) scheduleFlush();
     } else {
       if (flushTimer) {
         clearTimeout(flushTimer);
@@ -756,6 +843,7 @@ export function withDb<T>(
       }
       await persistCatalog();
       await persistAnalytics();
+      if (options?.publicChange !== false) revalidatePublicPages();
     }
     return result;
   });
@@ -768,6 +856,20 @@ export function withDb<T>(
 
 export function readDb(): Promise<Database> {
   const run = writeChain.then(() => ensureMemory());
+  writeChain = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+/** Like readDb, plus fresh sessions, pageviews, and clicks (admin analytics only). */
+export function readDbWithAnalytics(): Promise<Database> {
+  const run = writeChain.then(async () => {
+    const db = await ensureMemory();
+    await refreshAnalyticsIfChanged();
+    return memory ?? db;
+  });
   writeChain = run.then(
     () => undefined,
     () => undefined,
@@ -790,6 +892,77 @@ export function startOfMonth(now = new Date()) {
 export async function listAllTools() {
   const db = await readDb();
   return db.tools;
+}
+
+/*
+ * Public-page loaders. Callers wrap these in "use cache", so they must not await
+ * module-level promises (writeChain, shared loaders): a cached scope awaiting a promise
+ * created in another scope hangs during prerendering.
+ */
+
+/**
+ * Published catalog with tools reduced to card fields (see loadPublicCatalog).
+ * `live` is false when Postgres failed and the bundled snapshot was used instead.
+ */
+export async function loadPublicDb(): Promise<{ db: Database; live: boolean }> {
+  if (!usesPostgres()) return { db: await ensureMemory(), live: true };
+  try {
+    const { loadPublicCatalog } = await postgresStore();
+    const loaded = await loadPublicCatalog();
+    return { db: normalizeDb(loaded.value), live: true };
+  } catch (error) {
+    console.error("[forge] Postgres public catalog load failed, using bundled snapshot", error);
+    return { db: emptyDb(), live: false };
+  }
+}
+
+/** Full review record. Throws when Postgres fails, so a broken render is never cached. */
+export async function loadPublicTool(card: Tool): Promise<Tool | undefined> {
+  if (!usesPostgres()) {
+    const tool = (await ensureMemory()).tools.find((item) => item.slug === card.slug);
+    return tool && isPublished(tool) ? tool : undefined;
+  }
+  const { loadCatalogTool } = await postgresStore();
+  const raw = await loadCatalogTool(card.slug);
+  if (raw) {
+    if (!isPublished(raw)) return undefined;
+    const tool = normalizeTool(raw);
+    return {
+      ...tool,
+      category: card.category,
+      officialUrl: tool.officialUrl || card.officialUrl,
+      website: tool.website || card.website,
+    };
+  }
+  // Core catalog tools that were never persisted are injected at hydration time.
+  const entry = CORE_CATALOG.find((item) => catalogSlug(item) === card.slug);
+  return entry ? expandCatalogEntry(entry, { status: "published" }) : undefined;
+}
+
+/** Last-30-day traffic for the Advertise page, aggregated in Postgres. */
+export async function loadTrafficSummary(): Promise<{
+  pageviews30d: number;
+  visitors30d: number;
+  topCountries: string[];
+  live: boolean;
+}> {
+  const since = Date.now() - 30 * 86_400_000;
+  if (usesPostgres()) {
+    try {
+      const { loadPageviewSummary } = await postgresStore();
+      const summary = await loadPageviewSummary(new Date(since).toISOString());
+      return {
+        pageviews30d: summary.pageviews,
+        visitors30d: summary.visitors,
+        topCountries: summary.topCountries,
+        live: true,
+      };
+    } catch (error) {
+      console.error("[forge] Postgres pageview summary failed", error);
+      return { pageviews30d: 0, visitors30d: 0, topCountries: [], live: false };
+    }
+  }
+  return { ...trafficFromMemory(await ensureMemory(), since), live: true };
 }
 
 export async function listTools() {
@@ -1023,7 +1196,7 @@ export async function addSubmission(
     };
     db.submissions.unshift(submission);
     return submission;
-  });
+  }, { publicChange: false });
 }
 
 function toolFromSubmission(submission: Submission): Tool {
@@ -1070,7 +1243,11 @@ export async function upsertHeartbeat(input: {
   country: string;
 }) {
   const now = new Date().toISOString();
-  return withDb((db) => {
+  if (usesPostgres()) {
+    await touchSession(input.sessionId, input.country, now);
+    return;
+  }
+  await withDb((db) => {
     const existing = db.sessions.find((session) => session.id === input.sessionId);
     if (existing) {
       existing.lastSeen = now;
@@ -1083,11 +1260,28 @@ export async function upsertHeartbeat(input: {
         lastSeen: now,
       });
     }
-    const cutoff = Date.now() - LIVE_WINDOW_MS;
-    return db.sessions.filter(
-      (session) => new Date(session.lastSeen).getTime() >= cutoff,
-    ).length;
   }, { immediate: false });
+}
+
+async function touchSession(sessionId: string, country: string, now: string) {
+  try {
+    const { touchAnalyticsSession } = await postgresStore();
+    await touchAnalyticsSession(
+      { id: sessionId, country, firstSeen: now, lastSeen: now },
+      country ? { lastSeen: now, country } : { lastSeen: now },
+    );
+  } catch (error) {
+    console.error("[forge] heartbeat write failed", error);
+  }
+}
+
+async function appendEvent(field: "pageviews" | "clicks", event: PageviewEvent | ClickEvent) {
+  try {
+    const { appendAnalyticsEvent } = await postgresStore();
+    await appendAnalyticsEvent(field, event);
+  } catch (error) {
+    console.error(`[forge] ${field} write failed`, error);
+  }
 }
 
 export async function recordPageview(input: {
@@ -1102,6 +1296,11 @@ export async function recordPageview(input: {
     country: input.country,
     timestamp: new Date().toISOString(),
   };
+  if (usesPostgres()) {
+    await appendEvent("pageviews", event);
+    await touchSession(input.sessionId, input.country, event.timestamp);
+    return event;
+  }
   await withDb((db) => {
     db.pageviews.push(event);
     const session = db.sessions.find((item) => item.id === input.sessionId);
@@ -1128,9 +1327,13 @@ export async function recordClick(slug: string, country: string) {
     country,
     timestamp: new Date().toISOString(),
   };
+  if (usesPostgres()) {
+    await appendEvent("clicks", event);
+    return event;
+  }
   await withDb((db) => {
     db.clicks.push(event);
-  });
+  }, { publicChange: false });
   return event;
 }
 
@@ -1161,7 +1364,7 @@ function isPendingPaidBooking(ad: AdCampaign) {
   return Boolean(ad.paymentRef) && ad.status === "paused" && !ad.endDate;
 }
 
-function featuredAvailability(db: Database): AdvertiseAvailability {
+export function featuredAvailability(db: Database): AdvertiseAvailability {
   const now = Date.now();
   const booked = db.ads.filter(
     (ad) => ad.placement === "hero_banner" && (isAdLive(ad, now) || isPendingPaidBooking(ad)),
@@ -1179,9 +1382,7 @@ export async function getFeaturedAvailability() {
   return featuredAvailability(await readDb());
 }
 
-export async function getAdvertiseStats(): Promise<AdvertiseStats> {
-  const db = await readDb();
-  const since = Date.now() - 30 * 86_400_000;
+function trafficFromMemory(db: Database, since: number): Omit<AdvertiseStats, "publishedTools" | "categories"> {
   const recent = db.pageviews.filter((event) => new Date(event.timestamp).getTime() >= since);
   const countries = new Map<string, number>();
   for (const event of recent) {
@@ -1189,8 +1390,6 @@ export async function getAdvertiseStats(): Promise<AdvertiseStats> {
     countries.set(event.country, (countries.get(event.country) ?? 0) + 1);
   }
   return {
-    publishedTools: db.tools.filter(isPublished).length,
-    categories: db.categories.length,
     pageviews30d: recent.length,
     visitors30d: new Set(recent.map((event) => event.sessionId)).size,
     topCountries: [...countries.entries()]
@@ -1378,20 +1577,26 @@ export async function recordAdImpressions(ids: string[]) {
 }
 
 export async function recordAdClick(id: string, country: string) {
-  return withDb((db) => {
+  const ad = await withDb((db) => {
     expireAds(db);
     const ad = db.ads.find((item) => item.id === id);
     if (!ad || !isAdLive(ad)) return null;
     ad.clicks += 1;
     ad.updatedAt = new Date().toISOString();
-    db.clicks.push({
-      id: newId("clk"),
-      slug: ad.toolSlug || `ad:${ad.id}`,
-      country,
-      timestamp: new Date().toISOString(),
-    });
+    if (!usesPostgres()) db.clicks.push(clickEvent(ad, country));
     return ad;
-  });
+  }, { publicChange: false });
+  if (ad && usesPostgres()) await appendEvent("clicks", clickEvent(ad, country));
+  return ad;
+}
+
+function clickEvent(ad: AdCampaign, country: string): ClickEvent {
+  return {
+    id: newId("clk"),
+    slug: ad.toolSlug || `ad:${ad.id}`,
+    country,
+    timestamp: new Date().toISOString(),
+  };
 }
 
 export async function updateSettings(epc: number) {
@@ -1457,7 +1662,7 @@ export async function upsertRankCheck(snapshot: RankSnapshot) {
     if (index >= 0) db.rankChecks[index] = snapshot;
     else db.rankChecks.unshift(snapshot);
     return snapshot;
-  });
+  }, { publicChange: false });
 }
 
 export async function getRankChecks() {
@@ -1477,14 +1682,14 @@ export async function changeAdminPasswordHash(hash: string) {
   return withDb((db) => {
     db.settings.adminPasswordHash = hash;
     return true;
-  });
+  }, { publicChange: false });
 }
 
 export async function rotateSessionSecret() {
   return withDb((db) => {
     db.settings.sessionSecret = newSessionSecret();
     return db.settings.sessionSecret;
-  });
+  }, { publicChange: false });
 }
 
 export async function listGeminiKeys() {
@@ -1516,7 +1721,7 @@ export async function addGeminiKey(label: string, key: string) {
     });
     db.geminiKeys.push(record);
     return toPublicGeminiKey(record);
-  });
+  }, { publicChange: false });
 }
 
 export async function setGeminiKeyEnabled(id: string, enabled: boolean) {
@@ -1525,7 +1730,7 @@ export async function setGeminiKeyEnabled(id: string, enabled: boolean) {
     if (!item) return null;
     item.enabled = enabled;
     return toPublicGeminiKey(item);
-  });
+  }, { publicChange: false });
 }
 
 export async function deleteGeminiKey(id: string) {
@@ -1533,7 +1738,7 @@ export async function deleteGeminiKey(id: string) {
     const before = db.geminiKeys.length;
     db.geminiKeys = db.geminiKeys.filter((item) => item.id !== id);
     return before !== db.geminiKeys.length;
-  });
+  }, { publicChange: false });
 }
 
 export async function getGeminiKeyRecord(id: string) {
@@ -1576,7 +1781,7 @@ export async function recordGeminiKeyResult(
       item.lastError = result.error || "Request failed";
     }
     return toPublicGeminiKey(item);
-  });
+  }, { publicChange: false });
 }
 
 export async function addCommission(input: {

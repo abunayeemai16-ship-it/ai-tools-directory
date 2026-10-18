@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import { DealCard } from "@/components/deals/DealCard";
-import { getDealTools, listCategories } from "@/lib/db";
-import { live } from "@/lib/live";
+import { getDealsData } from "@/lib/public-data";
 
 export const instant = false;
 
@@ -12,8 +11,7 @@ export const metadata: Metadata = {
 };
 
 export default async function DealsPage() {
-  await live();
-  const [deals, categories] = await Promise.all([getDealTools(), listCategories()]);
+  const { deals, categories } = await getDealsData();
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-12 sm:px-6">

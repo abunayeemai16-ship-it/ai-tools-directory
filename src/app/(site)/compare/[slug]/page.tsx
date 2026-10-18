@@ -4,32 +4,26 @@ import { notFound } from "next/navigation";
 import { Crown } from "lucide-react";
 import { AffiliateButton } from "@/components/tools/AffiliateButton";
 import { ToolLogo } from "@/components/tools/ToolLogo";
-import {
-  getComparisonBySlug,
-  getComparisonTools,
-  listComparisons,
-} from "@/lib/db";
-import { live } from "@/lib/live";
+import { getComparisonPageData, getComparisonSlugs } from "@/lib/public-data";
 import { comparisonSchema, JsonLd } from "@/lib/schema";
 import { cn } from "@/lib/utils";
 
 export const instant = false;
 
 export async function generateStaticParams() {
-  const comparisons = await listComparisons();
-  return comparisons.map((item) => ({ slug: item.slug }));
+  const slugs = await getComparisonSlugs();
+  return slugs.map((slug) => ({ slug }));
 }
 
 export async function generateMetadata({
   params,
 }: PageProps<"/compare/[slug]">): Promise<Metadata> {
-  await live();
   const { slug } = await params;
-  const comparison = await getComparisonBySlug(slug);
-  const pair = comparison ? await getComparisonTools(comparison) : null;
-  if (!comparison || !pair) return { title: "Comparison not found" };
+  const data = await getComparisonPageData(slug);
+  if (!data) return { title: "Comparison not found" };
+  const { comparison, toolA, toolB } = data;
   return {
-    title: comparison.seoTitle || `${pair.toolA.name} vs ${pair.toolB.name}`,
+    title: comparison.seoTitle || `${toolA.name} vs ${toolB.name}`,
     description: comparison.metaDescription || comparison.tagline,
   };
 }
@@ -37,12 +31,10 @@ export async function generateMetadata({
 export default async function ComparisonPage({
   params,
 }: PageProps<"/compare/[slug]">) {
-  await live();
   const { slug } = await params;
-  const comparison = await getComparisonBySlug(slug);
-  const pair = comparison ? await getComparisonTools(comparison) : null;
-  if (!comparison || !pair) notFound();
-  const { toolA, toolB } = pair;
+  const data = await getComparisonPageData(slug);
+  if (!data) notFound();
+  const { comparison, toolA, toolB } = data;
   const overall =
     comparison.overallWinner === "a"
       ? toolA.name

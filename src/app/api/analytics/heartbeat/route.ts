@@ -15,10 +15,10 @@ export async function POST(request: Request) {
   }
 
   const country = resolveCountry(request, body);
-  const liveVisitors = await upsertHeartbeat({
+  await upsertHeartbeat({
     sessionId: body.sessionId,
     country,
   });
 
-  return NextResponse.json({ ok: true, liveVisitors, country });
+  return NextResponse.json({ ok: true, country });
 }

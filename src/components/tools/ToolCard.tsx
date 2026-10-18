@@ -14,11 +14,13 @@ export function ToolCard({
   categories = [],
   spotlight = false,
   spotlightLabel = "Partner Spotlight",
+  eager = false,
 }: {
   tool: Tool;
   categories?: DirectoryCategory[];
   spotlight?: boolean;
   spotlightLabel?: string;
+  eager?: boolean;
 }) {
   const headline = tool.shortPitch.trim() || `${tool.name} at a glance`;
 
@@ -37,6 +39,7 @@ export function ToolCard({
         color={tool.brandColor}
         headline={headline}
         website={tool.officialUrl || tool.website}
+        eager={eager}
       />
       <div className="flex flex-1 flex-col p-5">
       <div className="flex items-start gap-3">

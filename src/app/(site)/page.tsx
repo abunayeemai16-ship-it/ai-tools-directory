@@ -3,37 +3,19 @@ import { BadgeCheck } from "lucide-react";
 import Link from "next/link";
 import { DirectoryExplorer } from "@/components/directory/DirectoryExplorer";
 import { ToolCard } from "@/components/tools/ToolCard";
-import { liveAds } from "@/lib/ads";
-import { getFeaturedTools, listAds, listCategories, listTools, readDb } from "@/lib/db";
-import { live } from "@/lib/live";
-import type { Tool } from "@/lib/types";
-
-function toCard(tool: Tool): Tool {
-  return {
-    ...tool,
-    overview: "",
-    features: [],
-    pros: [],
-    cons: [],
-    pricingTiers: [],
-    faqs: [],
-    jsonLd: undefined,
-  };
-}
+import { getHomeData, getHomeSeo } from "@/lib/public-data";
 
 export const instant = false;
-// Cache Components: do not export revalidate/dynamic — live() via connection() runs at request time.
 
 export async function generateMetadata(): Promise<Metadata> {
-  await live();
   try {
-    const db = await readDb();
+    const seo = await getHomeSeo();
     return {
-      title: { absolute: db.settings.homeSeoTitle },
-      description: db.settings.homeSeoDescription,
+      title: { absolute: seo.title },
+      description: seo.description,
       openGraph: {
-        title: db.settings.homeSeoTitle,
-        description: db.settings.homeSeoDescription,
+        title: seo.title,
+        description: seo.description,
         type: "website",
       },
     };
@@ -46,21 +28,11 @@ export async function generateMetadata(): Promise<Metadata> {
 }
 
 export default async function HomePage() {
-  await live();
-  const [tools, featured, categories, ads] = await Promise.all([
-    listTools().catch(() => []),
-    getFeaturedTools().catch(() => []),
-    listCategories().catch(() => []),
-    listAds().catch(() => []),
-  ]);
+  const { tools, featured, categories, ads } = await getHomeData();
 
   return (
     <>
-      <DirectoryExplorer
-        tools={tools.map(toCard)}
-        categories={categories}
-        ads={liveAds(ads)}
-      />
+      <DirectoryExplorer tools={tools} categories={categories} ads={ads} />
       <section className="border-t border-line bg-ink-2">
         <div className="mx-auto max-w-6xl px-4 py-14 sm:px-6">
           <div className="flex flex-wrap items-end justify-between gap-4">
@@ -76,8 +48,8 @@ export default async function HomePage() {
             </Link>
           </div>
           <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {featured.slice(0, 6).map((tool) => (
-              <ToolCard key={tool.slug} tool={toCard(tool)} categories={categories} />
+            {featured.map((tool) => (
+              <ToolCard key={tool.slug} tool={tool} categories={categories} />
             ))}
           </div>
         </div>

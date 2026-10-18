@@ -1,5 +1,5 @@
 import { countryName } from "@/lib/country";
-import { LIVE_WINDOW_MS, readDb, startOfMonth, startOfToday } from "@/lib/db";
+import { LIVE_WINDOW_MS, readDbWithAnalytics, startOfMonth, startOfToday } from "@/lib/db";
 import type { AnalyticsOverview, CountryStat, TrafficPoint } from "@/lib/types";
 
 function inRange(iso: string, start: Date, end = new Date()) {
@@ -61,7 +61,7 @@ function trafficBuckets(
 }
 
 export async function getAnalyticsOverview(): Promise<AnalyticsOverview> {
-  const db = await readDb();
+  const db = await readDbWithAnalytics();
   const now = Date.now();
   const today = startOfToday();
   const month = startOfMonth();
@@ -122,7 +122,7 @@ export async function getAnalyticsOverview(): Promise<AnalyticsOverview> {
 }
 
 export async function getToolsWithClickStats() {
-  const db = await readDb();
+  const db = await readDbWithAnalytics();
   const today = startOfToday();
   const month = startOfMonth();
   return db.tools.map((tool) => {

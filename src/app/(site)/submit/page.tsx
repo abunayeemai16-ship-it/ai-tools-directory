@@ -1,8 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { SubmitForm } from "@/components/submit/SubmitForm";
-import { listCategories } from "@/lib/db";
-import { live } from "@/lib/live";
+import { getPublicCategories } from "@/lib/public-data";
 
 export const instant = false;
 
@@ -13,8 +12,7 @@ export const metadata: Metadata = {
 };
 
 export default async function SubmitPage() {
-  await live();
-  const categories = await listCategories();
+  const categories = await getPublicCategories();
   return (
     <div className="mx-auto max-w-3xl px-4 py-12 sm:px-6">
       <p className="text-xs uppercase tracking-[0.18em] text-accent">Founders</p>

@@ -2,7 +2,6 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Check, Minus, Quote } from "lucide-react";
-import { cookies } from "next/headers";
 import { AffiliateButton } from "@/components/tools/AffiliateButton";
 import { RateTool } from "@/components/tools/RateTool";
 import { PricingBadge } from "@/components/tools/PricingBadge";
@@ -11,25 +10,22 @@ import { StickyCta } from "@/components/tools/StickyCta";
 import { ToolCard } from "@/components/tools/ToolCard";
 import { ToolLogo } from "@/components/tools/ToolLogo";
 import { categoryLabel } from "@/lib/categories";
-import { liveAds } from "@/lib/ads";
-import { getRelatedTools, getToolBySlug, listAds, listCategories, listTools } from "@/lib/db";
-import { live } from "@/lib/live";
+import { getPopularToolSlugs, getToolPageData } from "@/lib/public-data";
 import { faqSchema, JsonLd, softwareApplicationSchema } from "@/lib/schema";
 import { formatNumber } from "@/lib/utils";
 
 export const instant = false;
 
 export async function generateStaticParams() {
-  const tools = await listTools();
-  return tools.map((tool) => ({ slug: tool.slug }));
+  const slugs = await getPopularToolSlugs();
+  return slugs.map((slug) => ({ slug }));
 }
 
 export async function generateMetadata({
   params,
 }: PageProps<"/tool/[slug]">): Promise<Metadata> {
-  await live();
   const { slug } = await params;
-  const tool = await getToolBySlug(slug);
+  const tool = (await getToolPageData(slug))?.tool;
   if (!tool) return { title: "Tool not found" };
   return {
     title: tool.seoTitle,
@@ -43,18 +39,11 @@ export async function generateMetadata({
 }
 
 export default async function ToolPage({ params }: PageProps<"/tool/[slug]">) {
-  await live();
   const { slug } = await params;
-  const tool = await getToolBySlug(slug);
-  if (!tool) notFound();
-  const related = await getRelatedTools(tool);
-  const categories = await listCategories();
-  const promoAds = liveAds(await listAds(), "review_sidebar");
+  const data = await getToolPageData(slug);
+  if (!data) notFound();
+  const { tool, sidebarTool, related, categories, promoAds } = data;
   const categoryName = categoryLabel(tool.category, categories);
-  const rated = ((await cookies()).get("forge_rated")?.value || "")
-    .split(",")
-    .filter(Boolean);
-  const alreadyRated = rated.includes(tool.slug);
 
   return (
     <article className="mx-auto max-w-6xl px-4 py-10 sm:px-6">
@@ -100,7 +89,6 @@ export default async function ToolPage({ params }: PageProps<"/tool/[slug]">) {
                 slug={tool.slug}
                 rating={tool.rating}
                 reviewCount={tool.reviewCount}
-                alreadyRated={alreadyRated}
               />
               <div className="mt-5 lg:hidden">
                 <AffiliateButton slug={tool.slug} label="Visit Website / Claim Deal" />
@@ -209,7 +197,7 @@ export default async function ToolPage({ params }: PageProps<"/tool/[slug]">) {
             </section>
           ) : null}
         </div>
-        <StickyCta tool={tool} promos={promoAds} />
+        <StickyCta tool={sidebarTool} promos={promoAds} />
       </div>
     </article>
   );

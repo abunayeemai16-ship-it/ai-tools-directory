@@ -1,24 +1,32 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { Star } from "lucide-react";
 import { cn } from "@/lib/utils";
+
+const noSubscribe = () => () => {};
+
+function ratedCookie() {
+  const match = document.cookie.match(/(?:^|;\s*)forge_rated=([^;]*)/);
+  return match ? decodeURIComponent(match[1]) : "";
+}
 
 export function RateTool({
   slug,
   rating,
   reviewCount,
-  alreadyRated = false,
 }: {
   slug: string;
   rating: number;
   reviewCount: number;
-  alreadyRated?: boolean;
 }) {
+  const rated = useSyncExternalStore(noSubscribe, ratedCookie, () => "");
+  const alreadyRated = rated.split(",").includes(slug);
   const [hover, setHover] = useState(0);
   const [current, setCurrent] = useState(rating);
   const [count, setCount] = useState(reviewCount);
-  const [done, setDone] = useState(alreadyRated);
+  const [voted, setVoted] = useState(false);
+  const done = voted || alreadyRated;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -40,7 +48,7 @@ export function RateTool({
       if (!res.ok) throw new Error(payload.error || "Could not save rating");
       setCurrent(payload.rating ?? stars);
       setCount(payload.reviewCount ?? count + 1);
-      setDone(true);
+      setVoted(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save rating");
     } finally {

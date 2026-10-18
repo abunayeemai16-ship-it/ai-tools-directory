@@ -57,7 +57,7 @@ export function AnalyticsTracker() {
     idRef.current = sessionId();
     let inFlight = false;
     const beat = () => {
-      if (inFlight) return;
+      if (inFlight || document.visibilityState === "hidden") return;
       inFlight = true;
       void ping("/api/analytics/heartbeat", {
         sessionId: idRef.current,

@@ -4,6 +4,23 @@ const nextConfig: NextConfig = {
   /* config options here */
   cacheComponents: true,
   partialPrefetching: true,
+  images: {
+    formats: ["image/avif", "image/webp"],
+    qualities: [75],
+    // Cover cards render at most ~360 CSS px wide; fewer widths means fewer billable transformations.
+    deviceSizes: [640, 828, 1200],
+    imageSizes: [384],
+    // mshots serves a "generating" placeholder for new sites, so do not pin images for too long.
+    minimumCacheTTL: 60 * 60 * 24 * 7,
+    remotePatterns: [
+      {
+        protocol: "https",
+        hostname: "s0.wp.com",
+        pathname: "/mshots/v1/**",
+        search: "?w=800&h=500",
+      },
+    ],
+  },
   serverExternalPackages: ["pg"],
   outputFileTracingIncludes: {
     "/*": [
