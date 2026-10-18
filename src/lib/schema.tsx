@@ -1,3 +1,4 @@
+import { SITE_URL } from "@/lib/site";
 import type { Comparison, Tool } from "@/lib/types";
 
 export function softwareApplicationSchema(tool: Tool) {
@@ -9,7 +10,7 @@ export function softwareApplicationSchema(tool: Tool) {
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
     name: tool.name,
-    url: `https://forge.directory/tool/${tool.slug}`,
+    url: `${SITE_URL}/tool/${tool.slug}`,
     applicationCategory: "BusinessApplication",
     operatingSystem: "Web",
     description: tool.metaDescription,

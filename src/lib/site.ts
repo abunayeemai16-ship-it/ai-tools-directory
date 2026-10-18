@@ -6,9 +6,13 @@ export function normalizeDomain(value?: string) {
   return (value || "").trim().replace(/^https?:\/\//i, "").replace(/\/+$/, "").toLowerCase();
 }
 
+export const SITE_URL = `https://${
+  normalizeDomain(process.env.NEXT_PUBLIC_SITE_URL) || "www.aitooldirectory.online"
+}`;
+
 export function siteOrigin(domain?: string) {
   const host = normalizeDomain(domain);
-  if (!host) return "https://forge.directory";
+  if (!host) return SITE_URL;
   return `https://${host}`;
 }
 

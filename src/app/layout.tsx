@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono, Instrument_Serif } from "next/font/google";
 import "./globals.css";
-import { DEFAULT_HOME_DESCRIPTION, DEFAULT_HOME_TITLE } from "@/lib/site";
+import { DEFAULT_HOME_DESCRIPTION, DEFAULT_HOME_TITLE, SITE_URL } from "@/lib/site";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -20,7 +20,7 @@ const instrument = Instrument_Serif({
 });
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://forge.directory"),
+  metadataBase: new URL(SITE_URL),
   title: {
     default: DEFAULT_HOME_TITLE,
     template: "%s | Forge",
