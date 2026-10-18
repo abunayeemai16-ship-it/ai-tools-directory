@@ -44,9 +44,11 @@ async function publicCatalog() {
 
 async function publicTool(card: Tool) {
   "use cache";
-  cacheLife("hours");
   cacheTag(PUBLIC_CACHE_TAG);
-  return (await loadPublicTool(card)) ?? null;
+  const { tool, live } = await loadPublicTool(card);
+  if (live) cacheLife("hours");
+  else cacheLife("minutes");
+  return tool ?? null;
 }
 
 async function trafficSummary() {

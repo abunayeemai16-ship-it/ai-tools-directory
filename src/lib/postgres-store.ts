@@ -80,12 +80,20 @@ async function ensureSchema(runner: Runner) {
     [SCHEMA_KEY],
   );
   if ((marker.rows[0]?.version ?? 0) < SCHEMA_VERSION) {
-    await moveEventsOutOfCatalog(runner);
-    await runner.query(
-      `INSERT INTO forge_kv (key, value, updated_at) VALUES ($1, $2::jsonb, clock_timestamp())
-       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = clock_timestamp()`,
-      [SCHEMA_KEY, JSON.stringify({ version: SCHEMA_VERSION })],
-    );
+    try {
+      await runner.query("BEGIN");
+      await runner.query("SET LOCAL statement_timeout = '120s'");
+      await moveEventsOutOfCatalog(runner);
+      await runner.query(
+        `INSERT INTO forge_kv (key, value, updated_at) VALUES ($1, $2::jsonb, clock_timestamp())
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = clock_timestamp()`,
+        [SCHEMA_KEY, JSON.stringify({ version: SCHEMA_VERSION })],
+      );
+      await runner.query("COMMIT");
+    } catch (error) {
+      await runner.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    }
   }
   schemaReady = true;
 }
@@ -99,7 +107,7 @@ async function moveEventsOutOfCatalog(runner: Runner) {
        'pageviews', COALESCE(value->'pageviews', '[]'::jsonb),
        'clicks', COALESCE(value->'clicks', '[]'::jsonb)
      ), clock_timestamp()
-     FROM forge_kv WHERE key = $1
+     FROM forge_kv WHERE key = $1 AND NOT EXISTS (SELECT 1 FROM forge_kv WHERE key = $2)
      ON CONFLICT (key) DO NOTHING`,
     [CATALOG_KEY, ANALYTICS_KEY],
   );

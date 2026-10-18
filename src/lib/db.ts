@@ -900,12 +900,19 @@ export async function listAllTools() {
  * created in another scope hangs during prerendering.
  */
 
+// `next build` prerenders many pages at once; on Vercel each worker gets a one-connection pool,
+// so builds use the bundled snapshot (cached for minutes) and real data replaces it at runtime.
+function isBuildPhase() {
+  return process.env.NEXT_PHASE === "phase-production-build";
+}
+
 /**
  * Published catalog with tools reduced to card fields (see loadPublicCatalog).
- * `live` is false when Postgres failed and the bundled snapshot was used instead.
+ * `live` is false when the bundled snapshot was used instead of Postgres.
  */
 export async function loadPublicDb(): Promise<{ db: Database; live: boolean }> {
   if (!usesPostgres()) return { db: await ensureMemory(), live: true };
+  if (isBuildPhase()) return { db: emptyDb(), live: false };
   try {
     const { loadPublicCatalog } = await postgresStore();
     const loaded = await loadPublicCatalog();
@@ -916,12 +923,20 @@ export async function loadPublicDb(): Promise<{ db: Database; live: boolean }> {
   }
 }
 
-/** Full review record. Throws when Postgres fails, so a broken render is never cached. */
-export async function loadPublicTool(card: Tool): Promise<Tool | undefined> {
-  if (!usesPostgres()) {
-    const tool = (await ensureMemory()).tools.find((item) => item.slug === card.slug);
-    return tool && isPublished(tool) ? tool : undefined;
+/**
+ * Full review record and whether it came from Postgres. Throws when Postgres fails,
+ * so a broken render is never cached.
+ */
+export async function loadPublicTool(card: Tool): Promise<{ tool: Tool | undefined; live: boolean }> {
+  if (!usesPostgres() || isBuildPhase()) {
+    const db = usesPostgres() ? emptyDb() : await ensureMemory();
+    const tool = db.tools.find((item) => item.slug === card.slug);
+    return { tool: tool && isPublished(tool) ? tool : undefined, live: !usesPostgres() };
   }
+  return { tool: await loadLiveTool(card), live: true };
+}
+
+async function loadLiveTool(card: Tool): Promise<Tool | undefined> {
   const { loadCatalogTool } = await postgresStore();
   const raw = await loadCatalogTool(card.slug);
   if (raw) {
@@ -948,6 +963,7 @@ export async function loadTrafficSummary(): Promise<{
 }> {
   const since = Date.now() - 30 * 86_400_000;
   if (usesPostgres()) {
+    if (isBuildPhase()) return { pageviews30d: 0, visitors30d: 0, topCountries: [], live: false };
     try {
       const { loadPageviewSummary } = await postgresStore();
       const summary = await loadPageviewSummary(new Date(since).toISOString());
