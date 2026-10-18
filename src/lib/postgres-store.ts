@@ -8,6 +8,8 @@ const CATALOG_KEY = "catalog";
 const ANALYTICS_KEY = "analytics";
 const SCHEMA_KEY = "schema";
 const SCHEMA_VERSION = 2;
+const MIGRATION_LOCK_ID = 7_310_002;
+let migrationFailedAt = 0;
 
 /** Event streams live in the analytics row so catalog reads stay small and rarely change. */
 const EVENT_FIELDS = ["sessions", "pageviews", "clicks"] as const;
@@ -55,7 +57,8 @@ function getPool() {
     connectionString: connectionStringWithoutSslMode(url),
     max: process.env.VERCEL ? 1 : 4,
     idleTimeoutMillis: 10_000,
-    connectionTimeoutMillis: process.env.VERCEL ? 3_000 : 8_000,
+    // Concurrent cached loaders queue for the single Vercel connection; give them room.
+    connectionTimeoutMillis: process.env.VERCEL ? 10_000 : 8_000,
     ssl: local ? undefined : { rejectUnauthorized: false },
   });
   pool.on("error", (error) => {
@@ -79,23 +82,37 @@ async function ensureSchema(runner: Runner) {
     "SELECT (value->>'version')::int AS version FROM forge_kv WHERE key = $1",
     [SCHEMA_KEY],
   );
-  if ((marker.rows[0]?.version ?? 0) < SCHEMA_VERSION) {
-    try {
-      await runner.query("BEGIN");
-      await runner.query("SET LOCAL statement_timeout = '120s'");
-      await moveEventsOutOfCatalog(runner);
-      await runner.query(
-        `INSERT INTO forge_kv (key, value, updated_at) VALUES ($1, $2::jsonb, clock_timestamp())
-         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = clock_timestamp()`,
-        [SCHEMA_KEY, JSON.stringify({ version: SCHEMA_VERSION })],
-      );
-      await runner.query("COMMIT");
-    } catch (error) {
-      await runner.query("ROLLBACK").catch(() => undefined);
-      throw error;
-    }
+  if ((marker.rows[0]?.version ?? 0) >= SCHEMA_VERSION) {
+    schemaReady = true;
+    return;
   }
-  schemaReady = true;
+  // Reads already project event fields away, so the move is housekeeping: one instance runs it,
+  // everyone else carries on, and a failure never fails the request.
+  if (Date.now() - migrationFailedAt < 10 * 60_000) return;
+  try {
+    await runner.query("BEGIN");
+    const lock = await runner.query<{ locked: boolean }>(
+      "SELECT pg_try_advisory_xact_lock($1) AS locked",
+      [MIGRATION_LOCK_ID],
+    );
+    if (!lock.rows[0]?.locked) {
+      await runner.query("ROLLBACK");
+      return;
+    }
+    await runner.query("SET LOCAL statement_timeout = '45s'");
+    await moveEventsOutOfCatalog(runner);
+    await runner.query(
+      `INSERT INTO forge_kv (key, value, updated_at) VALUES ($1, $2::jsonb, clock_timestamp())
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = clock_timestamp()`,
+      [SCHEMA_KEY, JSON.stringify({ version: SCHEMA_VERSION })],
+    );
+    await runner.query("COMMIT");
+    schemaReady = true;
+  } catch (error) {
+    migrationFailedAt = Date.now();
+    await runner.query("ROLLBACK").catch(() => undefined);
+    console.error("[forge] analytics migration failed; will retry later", error);
+  }
 }
 
 /** Server-side move of event streams into the analytics row; no data leaves Postgres. */
@@ -111,19 +128,28 @@ async function moveEventsOutOfCatalog(runner: Runner) {
      ON CONFLICT (key) DO NOTHING`,
     [CATALOG_KEY, ANALYTICS_KEY],
   );
-  // Merge by id: older deployments may still append clicks to the catalog row during rollout.
+  // Merge by id (older deployments may still append clicks to the catalog row during rollout).
+  // Sort-based dedupe keeps this O(n log n) for large click histories.
   await runner.query(
-    `UPDATE forge_kv a
-     SET value = jsonb_set(a.value, '{clicks}', COALESCE(a.value->'clicks', '[]'::jsonb) || COALESCE((
-           SELECT jsonb_agg(e) FROM jsonb_array_elements(c.value->'clicks') e
-           WHERE NOT EXISTS (
-             SELECT 1 FROM jsonb_array_elements(COALESCE(a.value->'clicks', '[]'::jsonb)) x
-             WHERE x->>'id' = e->>'id'
-           )
-         ), '[]'::jsonb)),
+    `WITH source AS (
+       SELECT e, ord FROM forge_kv a,
+         jsonb_array_elements(COALESCE(a.value->'clicks', '[]'::jsonb)) WITH ORDINALITY t(e, ord)
+       WHERE a.key = $2
+       UNION ALL
+       SELECT e, 1000000000 + ord FROM forge_kv c,
+         jsonb_array_elements(c.value->'clicks') WITH ORDINALITY t(e, ord)
+       WHERE c.key = $1 AND jsonb_typeof(c.value->'clicks') = 'array'
+     ), unique_clicks AS (
+       SELECT DISTINCT ON (COALESCE(e->>'id', ord::text)) e, ord
+       FROM source ORDER BY COALESCE(e->>'id', ord::text), ord
+     )
+     UPDATE forge_kv
+     SET value = jsonb_set(value, '{clicks}',
+           COALESCE((SELECT jsonb_agg(e ORDER BY ord) FROM unique_clicks), '[]'::jsonb)),
          updated_at = clock_timestamp()
-     FROM forge_kv c
-     WHERE a.key = $2 AND c.key = $1 AND jsonb_typeof(c.value->'clicks') = 'array'`,
+     WHERE key = $2 AND EXISTS (
+       SELECT 1 FROM forge_kv c WHERE c.key = $1 AND jsonb_typeof(c.value->'clicks') = 'array'
+     )`,
     [CATALOG_KEY, ANALYTICS_KEY],
   );
   await runner.query(
