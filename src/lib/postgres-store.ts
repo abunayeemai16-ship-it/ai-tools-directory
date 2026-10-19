@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import pg from "pg";
 import type { Pool, PoolClient } from "pg";
 import type { Database } from "@/lib/types";
@@ -7,13 +8,32 @@ const { Pool: PgPool } = pg;
 const CATALOG_KEY = "catalog";
 const ANALYTICS_KEY = "analytics";
 const SCHEMA_KEY = "schema";
-const SCHEMA_VERSION = 2;
+/**
+ * The catalog row is ~13 MB compressed, and every SQL access decompresses all of it.
+ * Public pages read small rows derived from it at write time instead: PUBLIC_KEY holds the
+ * card projection, forge_tools one row per tool.
+ */
+const PUBLIC_KEY = "public";
+const SCHEMA_VERSION = 3;
 const MIGRATION_LOCK_ID = 7_310_002;
 let migrationFailedAt = 0;
 
-/** Event streams live in the analytics row so catalog reads stay small and rarely change. */
+/**
+ * Events live one per row in forge_events: a pageview is an INSERT, a heartbeat a one-row upsert.
+ * Keeping them inside a JSON document forced Postgres to rewrite megabytes on every visit.
+ */
 const EVENT_FIELDS = ["sessions", "pageviews", "clicks"] as const;
-const CATALOG_COLUMNS = `value - 'sessions' - 'pageviews' - 'clicks'`;
+const EVENT_KINDS = [
+  { field: "sessions", kind: "session", at: "lastSeen" },
+  { field: "pageviews", kind: "pageview", at: "timestamp" },
+  { field: "clicks", kind: "click", at: "timestamp" },
+] as const;
+const CATALOG_COLUMNS = `value - '{sessions,pageviews,clicks}'::text[]`;
+/** A suspended serverless function must not pin one of the pooler's few backends. */
+const TRANSACTION_GUARDS = [
+  "SET LOCAL statement_timeout = '30s'",
+  "SET LOCAL idle_in_transaction_session_timeout = '60s'",
+];
 
 export type AnalyticsSlice = Pick<Database, "sessions" | "pageviews" | "clicks">;
 export type StoreVersions = { catalog: string | null; analytics: string | null };
@@ -86,10 +106,10 @@ async function ensureSchema(runner: Runner) {
     schemaReady = true;
     return;
   }
-  // Reads already project event fields away, so the move is housekeeping: one instance runs it,
-  // everyone else carries on, and a failure never fails the request.
+  // One instance runs the move, everyone else carries on, and a failure never fails the request.
   if (Date.now() - migrationFailedAt < 10 * 60_000) return;
   try {
+    await createTables(runner);
     await runner.query("BEGIN");
     const lock = await runner.query<{ locked: boolean }>(
       "SELECT pg_try_advisory_xact_lock($1) AS locked",
@@ -100,7 +120,8 @@ async function ensureSchema(runner: Runner) {
       return;
     }
     await runner.query("SET LOCAL statement_timeout = '45s'");
-    await moveEventsOutOfCatalog(runner);
+    await runner.query("SET LOCAL idle_in_transaction_session_timeout = '30s'");
+    await moveEventsToTable(runner);
     await runner.query(
       `INSERT INTO forge_kv (key, value, updated_at) VALUES ($1, $2::jsonb, clock_timestamp())
        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = clock_timestamp()`,
@@ -115,47 +136,60 @@ async function ensureSchema(runner: Runner) {
   }
 }
 
-/** Server-side move of event streams into the analytics row; no data leaves Postgres. */
-async function moveEventsOutOfCatalog(runner: Runner) {
-  await runner.query(
-    `INSERT INTO forge_kv (key, value, updated_at)
-     SELECT $2, jsonb_build_object(
-       'sessions', COALESCE(value->'sessions', '[]'::jsonb),
-       'pageviews', COALESCE(value->'pageviews', '[]'::jsonb),
-       'clicks', COALESCE(value->'clicks', '[]'::jsonb)
-     ), clock_timestamp()
-     FROM forge_kv WHERE key = $1 AND NOT EXISTS (SELECT 1 FROM forge_kv WHERE key = $2)
-     ON CONFLICT (key) DO NOTHING`,
-    [CATALOG_KEY, ANALYTICS_KEY],
-  );
-  // Merge by id (older deployments may still append clicks to the catalog row during rollout).
-  // Sort-based dedupe keeps this O(n log n) for large click histories.
-  await runner.query(
-    `WITH source AS (
-       SELECT e, ord FROM forge_kv a,
-         jsonb_array_elements(COALESCE(a.value->'clicks', '[]'::jsonb)) WITH ORDINALITY t(e, ord)
-       WHERE a.key = $2
-       UNION ALL
-       SELECT e, 1000000000 + ord FROM forge_kv c,
-         jsonb_array_elements(c.value->'clicks') WITH ORDINALITY t(e, ord)
-       WHERE c.key = $1 AND jsonb_typeof(c.value->'clicks') = 'array'
-     ), unique_clicks AS (
-       SELECT DISTINCT ON (COALESCE(e->>'id', ord::text)) e, ord
-       FROM source ORDER BY COALESCE(e->>'id', ord::text), ord
-     )
-     UPDATE forge_kv
-     SET value = jsonb_set(value, '{clicks}',
-           COALESCE((SELECT jsonb_agg(e ORDER BY ord) FROM unique_clicks), '[]'::jsonb)),
-         updated_at = clock_timestamp()
-     WHERE key = $2 AND EXISTS (
-       SELECT 1 FROM forge_kv c WHERE c.key = $1 AND jsonb_typeof(c.value->'clicks') = 'array'
-     )`,
-    [CATALOG_KEY, ANALYTICS_KEY],
-  );
+async function createTables(runner: Runner) {
+  await runner.query(`
+    CREATE TABLE IF NOT EXISTS forge_tools (
+      slug TEXT PRIMARY KEY,
+      hash TEXT NOT NULL,
+      data JSONB NOT NULL
+    )
+  `);
+  await runner.query("ALTER TABLE forge_tools ENABLE ROW LEVEL SECURITY");
+  await runner.query(`
+    CREATE TABLE IF NOT EXISTS forge_events (
+      kind TEXT NOT NULL,
+      id TEXT NOT NULL,
+      at TIMESTAMPTZ NOT NULL,
+      data JSONB NOT NULL,
+      PRIMARY KEY (kind, id)
+    )
+  `);
+  await runner.query("CREATE INDEX IF NOT EXISTS forge_events_kind_at ON forge_events (kind, at)");
+  await runner.query("ALTER TABLE forge_events ENABLE ROW LEVEL SECURITY");
+}
+
+function eventTime(field: string) {
+  return `CASE WHEN e->>'${field}' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}' THEN (e->>'${field}')::timestamptz
+               ELSE clock_timestamp() END`;
+}
+
+/**
+ * Server-side move of the analytics row's event arrays into forge_events.
+ * The catalog row is never touched here: reading it takes minutes on a busy free-tier instance,
+ * and catalog writes already drop any event keys it still carries.
+ */
+async function moveEventsToTable(runner: Runner) {
+  for (const { field, kind, at } of EVENT_KINDS) {
+    await runner.query(
+      `INSERT INTO forge_events (kind, id, at, data)
+       SELECT DISTINCT ON (id) $3::text, id, at, e FROM (
+         SELECT COALESCE(NULLIF(e->>'id', ''), md5(e::text)) AS id, ${eventTime(at)} AS at, e, ord
+         FROM forge_kv f, jsonb_array_elements(f.value->$2::text) WITH ORDINALITY t(e, ord)
+         WHERE f.key = $1 AND jsonb_typeof(e) = 'object'
+       ) src
+       ORDER BY id, ord DESC
+       ON CONFLICT (kind, id) DO ${
+         kind === "session"
+           ? "UPDATE SET data = forge_events.data || EXCLUDED.data, at = GREATEST(forge_events.at, EXCLUDED.at)"
+           : "NOTHING"
+       }`,
+      [ANALYTICS_KEY, field, kind],
+    );
+  }
   await runner.query(
     `UPDATE forge_kv SET value = ${CATALOG_COLUMNS}, updated_at = clock_timestamp()
-     WHERE key = $1 AND (value ? 'sessions' OR value ? 'pageviews' OR value ? 'clicks')`,
-    [CATALOG_KEY],
+     WHERE key = $1 AND value ?| '{sessions,pageviews,clicks}'::text[]`,
+    [ANALYTICS_KEY],
   );
 }
 
@@ -185,13 +219,13 @@ function publishedCount(raw: unknown) {
 async function upsertCatalog(client: Runner, value: unknown) {
   const payload = stripEvents(value);
   const incoming = publishedCount(payload);
-  const current = await client.query<{ published: number }>(
-    `SELECT (
-       SELECT count(*) FROM jsonb_array_elements(COALESCE(value->'tools', '[]'::jsonb)) t
-       WHERE (t->>'status') IS DISTINCT FROM 'draft'
-     )::int AS published
-     FROM forge_kv WHERE key = $1`,
-    [CATALOG_KEY],
+  const current = await client.query<{ published: number | null }>(
+    `SELECT COALESCE(
+       (SELECT jsonb_array_length(value->'data'->'tools') FROM forge_kv WHERE key = $2),
+       (SELECT count(*)::int FROM forge_kv, jsonb_array_elements(COALESCE(value->'tools', '[]'::jsonb)) t
+        WHERE key = $1 AND (t->>'status') IS DISTINCT FROM 'draft')
+     ) AS published`,
+    [CATALOG_KEY, PUBLIC_KEY],
   );
   const existing = current.rows[0]?.published ?? 0;
   if (existing > incoming) {
@@ -208,17 +242,102 @@ async function upsertCatalog(client: Runner, value: unknown) {
      RETURNING updated_at::text AS version`,
     [CATALOG_KEY, JSON.stringify(payload)],
   );
+  await syncDerivedRows(client, payload);
   return saved.rows[0]?.version ?? null;
 }
 
+type JsonObject = Record<string, unknown>;
+
+function pick(source: JsonObject, fields: readonly string[]) {
+  const out: JsonObject = {};
+  for (const field of fields) {
+    if (source[field] !== null && source[field] !== undefined) out[field] = source[field];
+  }
+  return out;
+}
+
+function digest(text: string) {
+  return createHash("sha1").update(text).digest("hex");
+}
+
+/** Published tools reduced to card fields, plus the small public collections. */
+function publicProjection(payload: JsonObject) {
+  const tools = Array.isArray(payload.tools) ? (payload.tools as JsonObject[]) : [];
+  return {
+    settings: pick((payload.settings ?? {}) as JsonObject, [
+      "homeSeoTitle",
+      "homeSeoDescription",
+      "siteDomain",
+    ]),
+    categories: payload.categories ?? [],
+    comparisons: payload.comparisons ?? [],
+    ads: payload.ads ?? [],
+    tools: tools
+      .filter((tool) => tool && tool.status !== "draft")
+      .map((tool) => pick(tool, PUBLIC_TOOL_FIELDS)),
+  };
+}
+
+/** Rewrites only the derived rows whose content hash changed. */
+export async function syncDerivedRows(client: Runner, payload: JsonObject) {
+  const publicJson = JSON.stringify(publicProjection(payload));
+  const publicHash = digest(publicJson);
+  const stored = await client.query<{ hash: string | null }>(
+    "SELECT value->>'hash' AS hash FROM forge_kv WHERE key = $1",
+    [PUBLIC_KEY],
+  );
+  if (stored.rows[0]?.hash !== publicHash) {
+    await client.query(
+      `INSERT INTO forge_kv (key, value, updated_at)
+       VALUES ($1, jsonb_build_object('hash', $2::text, 'data', $3::jsonb), clock_timestamp())
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = clock_timestamp()`,
+      [PUBLIC_KEY, publicHash, publicJson],
+    );
+  }
+
+  const known = new Map(
+    (await client.query<{ slug: string; hash: string }>("SELECT slug, hash FROM forge_tools")).rows.map(
+      (row) => [row.slug, row.hash],
+    ),
+  );
+  const seen = new Set<string>();
+  const changed: { slug: string; hash: string; json: string }[] = [];
+  for (const tool of Array.isArray(payload.tools) ? (payload.tools as JsonObject[]) : []) {
+    const slug = typeof tool?.slug === "string" ? tool.slug : "";
+    if (!slug || seen.has(slug)) continue;
+    seen.add(slug);
+    const json = JSON.stringify(tool);
+    const hash = digest(json);
+    if (known.get(slug) !== hash) changed.push({ slug, hash, json });
+  }
+  for (let index = 0; index < changed.length; index += 100) {
+    const batch = changed.slice(index, index + 100);
+    await client.query(
+      `INSERT INTO forge_tools (slug, hash, data)
+       SELECT * FROM unnest($1::text[], $2::text[], $3::jsonb[])
+       ON CONFLICT (slug) DO UPDATE SET hash = EXCLUDED.hash, data = EXCLUDED.data`,
+      [batch.map((row) => row.slug), batch.map((row) => row.hash), batch.map((row) => row.json)],
+    );
+  }
+  const removed = [...known.keys()].filter((slug) => !seen.has(slug));
+  if (removed.length) {
+    await client.query("DELETE FROM forge_tools WHERE slug = ANY($1::text[])", [removed]);
+  }
+}
+
+/** Newest event per kind; every heartbeat, pageview, or click moves at least one of them. */
+const EVENTS_VERSION_SQL = `concat_ws('|', ${EVENT_KINDS.map(
+  ({ kind }) => `(SELECT max(at) FROM forge_events WHERE kind = '${kind}')::text`,
+).join(", ")})`;
+
 export async function readStoreVersions(): Promise<StoreVersions> {
   return withClient(async (client) => {
-    const res = await client.query<{ key: string; version: string }>(
-      "SELECT key, updated_at::text AS version FROM forge_kv WHERE key = ANY($1::text[])",
-      [[CATALOG_KEY, ANALYTICS_KEY]],
+    const res = await client.query<{ catalog: string | null; analytics: string | null }>(
+      `SELECT (SELECT updated_at::text FROM forge_kv WHERE key = $1) AS catalog,
+              ${EVENTS_VERSION_SQL} AS analytics`,
+      [CATALOG_KEY],
     );
-    const find = (key: string) => res.rows.find((row) => row.key === key)?.version ?? null;
-    return { catalog: find(CATALOG_KEY), analytics: find(ANALYTICS_KEY) };
+    return { catalog: res.rows[0]?.catalog ?? null, analytics: res.rows[0]?.analytics ?? null };
   });
 }
 
@@ -234,11 +353,18 @@ export async function loadCatalog() {
 
 export async function loadAnalytics() {
   return withClient(async (client) => {
-    const res = await client.query<{ value: Partial<AnalyticsSlice>; version: string }>(
-      "SELECT value, updated_at::text AS version FROM forge_kv WHERE key = $1",
-      [ANALYTICS_KEY],
+    const version = await client.query<{ analytics: string | null }>(
+      `SELECT ${EVENTS_VERSION_SQL} AS analytics`,
     );
-    return { value: res.rows[0]?.value ?? null, version: res.rows[0]?.version ?? null };
+    const res = await client.query<{ kind: string; data: never }>(
+      "SELECT kind, data FROM forge_events ORDER BY at",
+    );
+    const value: AnalyticsSlice = { sessions: [], pageviews: [], clicks: [] };
+    for (const row of res.rows) {
+      const target = EVENT_KINDS.find((entry) => entry.kind === row.kind);
+      if (target) value[target.field].push(row.data);
+    }
+    return { value, version: version.rows[0]?.analytics ?? null };
   });
 }
 
@@ -265,48 +391,28 @@ const PUBLIC_TOOL_FIELDS = [
 ];
 
 /**
- * Published tools reduced to card fields, plus the small public collections.
- * Drafts, submissions, keys, commissions, rank checks, and long review text stay in Postgres.
+ * Published tools reduced to card fields, plus the small public collections; null until the
+ * first catalog write has produced the derived row.
  */
 export async function loadPublicCatalog() {
-  const toolObject = `jsonb_strip_nulls(jsonb_build_object(${PUBLIC_TOOL_FIELDS.map(
-    (field) => `'${field}', t->'${field}'`,
-  ).join(", ")}))`;
   return withClient(async (client) => {
-    const res = await client.query<{ value: Partial<Database>; version: string }>(
-      `SELECT jsonb_strip_nulls(jsonb_build_object(
-         'settings', jsonb_build_object(
-           'homeSeoTitle', value->'settings'->'homeSeoTitle',
-           'homeSeoDescription', value->'settings'->'homeSeoDescription',
-           'siteDomain', value->'settings'->'siteDomain'
-         ),
-         'categories', value->'categories',
-         'comparisons', value->'comparisons',
-         'ads', value->'ads',
-         'tools', (
-           SELECT COALESCE(jsonb_agg(${toolObject}), '[]'::jsonb)
-           FROM jsonb_array_elements(COALESCE(value->'tools', '[]'::jsonb)) t
-           WHERE (t->>'status') IS DISTINCT FROM 'draft'
-         )
-       )) AS value, updated_at::text AS version
-       FROM forge_kv WHERE key = $1`,
-      [CATALOG_KEY],
+    const res = await client.query<{ value: Partial<Database> | null }>(
+      "SELECT value->'data' AS value FROM forge_kv WHERE key = $1",
+      [PUBLIC_KEY],
     );
-    return { value: res.rows[0]?.value ?? null, version: res.rows[0]?.version ?? null };
+    return { value: res.rows[0]?.value ?? null };
   });
 }
 
-/** One full tool record, without downloading the rest of the catalog. */
+/** One full tool record. `ready` is false until forge_tools has been populated. */
 export async function loadCatalogTool(slug: string) {
   return withClient(async (client) => {
-    const res = await client.query<{ tool: Database["tools"][number] }>(
-      `SELECT t AS tool
-       FROM forge_kv, jsonb_array_elements(COALESCE(value->'tools', '[]'::jsonb)) t
-       WHERE key = $1 AND t->>'slug' = $2
-       LIMIT 1`,
-      [CATALOG_KEY, slug],
+    const res = await client.query<{ tool: Database["tools"][number] | null; ready: boolean }>(
+      `SELECT (SELECT data FROM forge_tools WHERE slug = $1) AS tool,
+              EXISTS (SELECT 1 FROM forge_tools) AS ready`,
+      [slug],
     );
-    return res.rows[0]?.tool ?? null;
+    return { tool: res.rows[0]?.tool ?? null, ready: Boolean(res.rows[0]?.ready) };
   });
 }
 
@@ -314,18 +420,17 @@ export async function loadCatalogTool(slug: string) {
 export async function loadPageviewSummary(sinceIso: string) {
   return withClient(async (client) => {
     const totals = await client.query<{ pageviews: number; visitors: number }>(
-      `SELECT count(*)::int AS pageviews, count(DISTINCT e->>'sessionId')::int AS visitors
-       FROM forge_kv, jsonb_array_elements(COALESCE(value->'pageviews', '[]'::jsonb)) e
-       WHERE key = $1 AND e->>'timestamp' >= $2`,
-      [ANALYTICS_KEY, sinceIso],
+      `SELECT count(*)::int AS pageviews, count(DISTINCT data->>'sessionId')::int AS visitors
+       FROM forge_events WHERE kind = 'pageview' AND at >= $1::timestamptz`,
+      [sinceIso],
     );
     const countries = await client.query<{ country: string }>(
-      `SELECT e->>'country' AS country
-       FROM forge_kv, jsonb_array_elements(COALESCE(value->'pageviews', '[]'::jsonb)) e
-       WHERE key = $1 AND e->>'timestamp' >= $2
-         AND COALESCE(e->>'country', '') NOT IN ('', 'UN')
+      `SELECT data->>'country' AS country
+       FROM forge_events
+       WHERE kind = 'pageview' AND at >= $1::timestamptz
+         AND COALESCE(data->>'country', '') NOT IN ('', 'UN')
        GROUP BY 1 ORDER BY count(*) DESC LIMIT 5`,
-      [ANALYTICS_KEY, sinceIso],
+      [sinceIso],
     );
     return {
       pageviews: totals.rows[0]?.pageviews ?? 0,
@@ -354,6 +459,7 @@ export async function withCatalogTransaction<T>(
   return withClient(async (client) => {
     try {
       await client.query("BEGIN");
+      for (const guard of TRANSACTION_GUARDS) await client.query(guard);
       const locked = await client.query<{ version: string }>(
         "SELECT updated_at::text AS version FROM forge_kv WHERE key = $1 FOR UPDATE",
         [CATALOG_KEY],
@@ -392,19 +498,16 @@ export async function withCatalogTransaction<T>(
 }
 
 /** Appends one event server-side; nothing is read back. */
-export async function appendAnalyticsEvent(field: "pageviews" | "clicks", event: object) {
+export async function appendAnalyticsEvent(
+  field: "pageviews" | "clicks",
+  event: { id: string; timestamp: string },
+) {
+  const kind = field === "pageviews" ? "pageview" : "click";
   await withClient((client) =>
     client.query(
-      `INSERT INTO forge_kv (key, value, updated_at)
-       VALUES ($1, jsonb_build_object($2::text, jsonb_build_array($3::jsonb)), clock_timestamp())
-       ON CONFLICT (key) DO UPDATE SET
-         value = jsonb_set(
-           forge_kv.value,
-           ARRAY[$2::text],
-           COALESCE(forge_kv.value->$2::text, '[]'::jsonb) || jsonb_build_array($3::jsonb)
-         ),
-         updated_at = clock_timestamp()`,
-      [ANALYTICS_KEY, field, JSON.stringify(event)],
+      `INSERT INTO forge_events (kind, id, at, data) VALUES ($1, $2, $3::timestamptz, $4::jsonb)
+       ON CONFLICT (kind, id) DO NOTHING`,
+      [kind, event.id, event.timestamp, JSON.stringify(event)],
     ),
   );
 }
@@ -416,22 +519,11 @@ export async function touchAnalyticsSession(
 ) {
   await withClient((client) =>
     client.query(
-      `INSERT INTO forge_kv (key, value, updated_at)
-       VALUES ($1, jsonb_build_object('sessions', jsonb_build_array($2::jsonb)), clock_timestamp())
-       ON CONFLICT (key) DO UPDATE SET
-         value = jsonb_set(forge_kv.value, '{sessions}', CASE
-           WHEN EXISTS (
-             SELECT 1 FROM jsonb_array_elements(COALESCE(forge_kv.value->'sessions', '[]'::jsonb)) s
-             WHERE s->>'id' = $3
-           )
-           THEN (
-             SELECT jsonb_agg(CASE WHEN e.s->>'id' = $3 THEN e.s || $4::jsonb ELSE e.s END ORDER BY e.ord)
-             FROM jsonb_array_elements(forge_kv.value->'sessions') WITH ORDINALITY AS e(s, ord)
-           )
-           ELSE COALESCE(forge_kv.value->'sessions', '[]'::jsonb) || jsonb_build_array($2::jsonb)
-         END),
-         updated_at = clock_timestamp()`,
-      [ANALYTICS_KEY, JSON.stringify(session), session.id, JSON.stringify(patch)],
+      `INSERT INTO forge_events (kind, id, at, data) VALUES ('session', $1, $2::timestamptz, $3::jsonb)
+       ON CONFLICT (kind, id) DO UPDATE SET
+         data = forge_events.data || $4::jsonb,
+         at = GREATEST(forge_events.at, EXCLUDED.at)`,
+      [session.id, session.lastSeen, JSON.stringify(session), JSON.stringify(patch)],
     ),
   );
 }

@@ -916,6 +916,7 @@ export async function loadPublicDb(): Promise<{ db: Database; live: boolean }> {
   try {
     const { loadPublicCatalog } = await postgresStore();
     const loaded = await loadPublicCatalog();
+    if (!loaded.value) return { db: emptyDb(), live: false };
     return { db: normalizeDb(loaded.value), live: true };
   } catch (error) {
     console.error("[forge] Postgres public catalog load failed, using bundled snapshot", error);
@@ -928,17 +929,20 @@ export async function loadPublicDb(): Promise<{ db: Database; live: boolean }> {
  * so a broken render is never cached.
  */
 export async function loadPublicTool(card: Tool): Promise<{ tool: Tool | undefined; live: boolean }> {
-  if (!usesPostgres() || isBuildPhase()) {
-    const db = usesPostgres() ? emptyDb() : await ensureMemory();
-    const tool = db.tools.find((item) => item.slug === card.slug);
-    return { tool: tool && isPublished(tool) ? tool : undefined, live: !usesPostgres() };
-  }
-  return { tool: await loadLiveTool(card), live: true };
+  if (!usesPostgres() || isBuildPhase()) return snapshotTool(card);
+  const { loadCatalogTool } = await postgresStore();
+  const { tool, ready } = await loadCatalogTool(card.slug);
+  if (!ready) return snapshotTool(card);
+  return { tool: liveTool(card, tool), live: true };
 }
 
-async function loadLiveTool(card: Tool): Promise<Tool | undefined> {
-  const { loadCatalogTool } = await postgresStore();
-  const raw = await loadCatalogTool(card.slug);
+async function snapshotTool(card: Tool): Promise<{ tool: Tool | undefined; live: boolean }> {
+  const db = usesPostgres() ? emptyDb() : await ensureMemory();
+  const tool = db.tools.find((item) => item.slug === card.slug);
+  return { tool: tool && isPublished(tool) ? tool : undefined, live: !usesPostgres() };
+}
+
+function liveTool(card: Tool, raw: Tool | null): Tool | undefined {
   if (raw) {
     if (!isPublished(raw)) return undefined;
     const tool = normalizeTool(raw);
