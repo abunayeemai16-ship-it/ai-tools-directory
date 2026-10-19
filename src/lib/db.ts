@@ -434,6 +434,9 @@ function normalizeSettings(raw?: Partial<AppSettings> | null): AppSettings {
     sponsoredName: sponsored.name,
     sponsoredPrice: sponsored.price,
     sponsoredDays: sponsored.days,
+    sponsoredOfferPrice: sponsored.offer?.price ?? 0,
+    sponsoredOfferStart: sponsored.offer?.startsAt ?? "",
+    sponsoredOfferEnd: sponsored.offer?.endsAt ?? "",
   };
 }
 
@@ -1432,6 +1435,9 @@ export async function updateSponsoredPlacement(placement: SponsoredPlacement) {
     db.settings.sponsoredName = placement.name;
     db.settings.sponsoredPrice = placement.price;
     db.settings.sponsoredDays = placement.days;
+    db.settings.sponsoredOfferPrice = placement.offer?.price ?? 0;
+    db.settings.sponsoredOfferStart = placement.offer?.startsAt ?? "";
+    db.settings.sponsoredOfferEnd = placement.offer?.endsAt ?? "";
     return sponsoredPlacement(db.settings);
   });
 }

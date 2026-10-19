@@ -1,8 +1,15 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { HOMEPAGE_FEATURED, type SponsoredPlacement } from "@/lib/advertise";
+import {
+  activeOffer,
+  checkoutPrice,
+  HOMEPAGE_FEATURED,
+  type SponsoredPlacement,
+} from "@/lib/advertise";
 
 /** How long the price quoted when checkout starts stays payable after an admin price change. */
 const TERMS_TTL_MS = 3 * 60 * 60 * 1000;
+/** Buyers already in the PayPal window when an offer ends may still finish at the offer price. */
+const OFFER_GRACE_MS = 30 * 60 * 1000;
 
 export function paypalClientId() {
   return process.env.PAYPAL_CLIENT_ID?.trim() || "";
@@ -53,9 +60,9 @@ async function paypalRequest<T>(path: string, body?: unknown, method: "GET" | "P
   return { ok: res.ok, data };
 }
 
-function signTerms(price: string, days: number, issuedAt: number) {
+function signTerms(price: string, days: number, expiresAt: number) {
   return createHmac("sha256", process.env.PAYPAL_CLIENT_SECRET?.trim() || "")
-    .update(`${HOMEPAGE_FEATURED.id}|${price}|${days}|${issuedAt}`)
+    .update(`${HOMEPAGE_FEATURED.id}|${price}|${days}|${expiresAt}`)
     .digest("hex")
     .slice(0, 32);
 }
@@ -65,31 +72,35 @@ function signTerms(price: string, days: number, issuedAt: number) {
  * so a later admin price change cannot reject a buyer mid-checkout and an order built in the
  * browser cannot claim a price we never offered.
  */
-function termsId(price: string, days: number) {
-  const issuedAt = Date.now();
-  return `${price}|${days}|${issuedAt}|${signTerms(price, days, issuedAt)}`;
+function termsId(price: string, days: number, expiresAt: number) {
+  return `${price}|${days}|${expiresAt}|${signTerms(price, days, expiresAt)}`;
 }
 
 function readTerms(customId: string | undefined) {
-  const [price, daysText, issuedText, signature] = (customId || "").split("|");
+  const [price, daysText, expiresText, signature] = (customId || "").split("|");
   const days = Number(daysText);
-  const issuedAt = Number(issuedText);
-  if (!price || !signature || !Number.isInteger(days) || !Number.isFinite(issuedAt)) return null;
-  if (Date.now() - issuedAt > TERMS_TTL_MS) return null;
-  const expected = Buffer.from(signTerms(price, days, issuedAt));
+  const expiresAt = Number(expiresText);
+  if (!price || !signature || !Number.isInteger(days) || !Number.isFinite(expiresAt)) return null;
+  if (Date.now() > expiresAt) return null;
+  const expected = Buffer.from(signTerms(price, days, expiresAt));
   const given = Buffer.from(signature);
   if (given.length !== expected.length || !timingSafeEqual(given, expected)) return null;
   return { price, days };
 }
 
 export async function createFeaturedOrder(toolName: string, placement: SponsoredPlacement) {
-  const price = placement.price.toFixed(2);
+  const now = Date.now();
+  const offer = activeOffer(placement, now);
+  const price = (offer?.price ?? placement.price).toFixed(2);
+  const expiresAt = offer
+    ? Math.min(now + TERMS_TTL_MS, Date.parse(offer.endsAt) + OFFER_GRACE_MS)
+    : now + TERMS_TTL_MS;
   const { ok, data } = await paypalRequest<{ id?: string }>("/v2/checkout/orders", {
     intent: "CAPTURE",
     purchase_units: [
       {
         reference_id: HOMEPAGE_FEATURED.id,
-        custom_id: termsId(price, placement.days),
+        custom_id: termsId(price, placement.days, expiresAt),
         description: `${placement.name} (${placement.days} days): ${toolName}`.slice(0, 127),
         amount: { currency_code: HOMEPAGE_FEATURED.currency, value: price },
       },
@@ -128,7 +139,10 @@ export async function captureFeaturedOrder(orderId: string, current: SponsoredPl
   const order = await paypalRequest<OrderResponse>(path, undefined, "GET");
   if (!order.ok) throw new Error("PayPal order not found.");
   const unit = order.data.purchase_units?.[0];
-  const terms = readTerms(unit?.custom_id) ?? { price: current.price.toFixed(2), days: current.days };
+  const terms = readTerms(unit?.custom_id) ?? {
+    price: checkoutPrice(current).toFixed(2),
+    days: current.days,
+  };
   const matches = (amount?: Amount) =>
     amount?.value === terms.price && amount?.currency_code === HOMEPAGE_FEATURED.currency;
   if (!matches(unit?.amount)) {

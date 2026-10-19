@@ -284,6 +284,10 @@ export type AppSettings = {
   sponsoredName: string;
   sponsoredPrice: number;
   sponsoredDays: number;
+  /** 0 when no offer is set. */
+  sponsoredOfferPrice: number;
+  sponsoredOfferStart: string;
+  sponsoredOfferEnd: string;
 };
 
 export type Database = {

@@ -2,7 +2,11 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Globe, KeyRound, Loader2, Megaphone, Shield, Trash2 } from "lucide-react";
+import { useNow } from "@/components/advertise/SponsoredPrice";
 import {
+  activeOffer,
+  discountPercent,
+  formatCountdown,
   formatUsd,
   HOMEPAGE_FEATURED,
   parseSponsoredPlacement,
@@ -23,6 +27,28 @@ function badgeClass(key: GeminiKeyPublic) {
   if (key.status === "active") return "bg-mint/15 text-mint";
   if (key.status === "quota_exceeded") return "bg-accent/15 text-accent";
   return "bg-rose/15 text-rose";
+}
+
+/** ISO time to the browser-local "YYYY-MM-DDTHH:mm" a datetime-local input expects. */
+function toLocalInput(iso: string | null) {
+  if (!iso) return "";
+  const date = new Date(iso);
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+}
+
+function fromLocalInput(value: string) {
+  if (!value.trim()) return "";
+  const time = new Date(value).getTime();
+  return Number.isFinite(time) ? new Date(time).toISOString() : value;
+}
+
+function offerTimeLabel(iso: string) {
+  return new Date(iso).toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }
 
 function usedLabel(value: string | null) {
@@ -56,12 +82,41 @@ export function SettingsManager({ initialKeys }: { initialKeys: GeminiKeyPublic[
   const [sponsoredPrice, setSponsoredPrice] = useState("");
   const [sponsoredDays, setSponsoredDays] = useState("");
   const [savedPlacement, setSavedPlacement] = useState<SponsoredPlacement | null>(null);
+  const [offerPrice, setOfferPrice] = useState("");
+  const [offerStart, setOfferStart] = useState("");
+  const [offerEnd, setOfferEnd] = useState("");
+  const now = useNow(0);
 
   function showPlacement(placement: SponsoredPlacement) {
     setSavedPlacement(placement);
     setSponsoredName(placement.name);
     setSponsoredPrice(String(placement.price));
     setSponsoredDays(String(placement.days));
+    // An ended offer is not refilled, so saving the form clears it instead of failing validation.
+    const offer =
+      placement.offer && Date.parse(placement.offer.endsAt) > Date.now() ? placement.offer : null;
+    setOfferPrice(offer ? String(offer.price) : "");
+    setOfferStart(toLocalInput(offer?.startsAt ?? null));
+    setOfferEnd(toLocalInput(offer?.endsAt ?? null));
+  }
+
+  const regularInput = Number(sponsoredPrice);
+  const offerInput = Number(offerPrice);
+  const offerPreview =
+    offerPrice.trim() && regularInput > 0 && offerInput > 0 && offerInput < regularInput
+      ? `${discountPercent(regularInput, offerInput)}% off, was ${formatUsd(regularInput)}`
+      : "";
+
+  function savedOfferStatus() {
+    const offer = savedPlacement?.offer;
+    if (!savedPlacement || !offer) return "";
+    const live = activeOffer(savedPlacement, now);
+    const price = `${formatUsd(offer.price)} (${discountPercent(savedPlacement.price, offer.price)}% off)`;
+    if (live) return `Saved offer ${price} is live. Ends in ${formatCountdown(Date.parse(offer.endsAt) - now)}.`;
+    if (offer.startsAt && Date.parse(offer.startsAt) > now) {
+      return `Saved offer ${price} is scheduled to start ${offerTimeLabel(offer.startsAt)}.`;
+    }
+    return `Last offer ${price} ended ${offerTimeLabel(offer.endsAt)}. The regular price applies.`;
   }
 
   const load = useCallback(async () => {
@@ -334,10 +389,18 @@ export function SettingsManager({ initialKeys }: { initialKeys: GeminiKeyPublic[
         <form
           onSubmit={async (event) => {
             event.preventDefault();
+            const hasOffer = [offerPrice, offerStart, offerEnd].some((value) => value.trim());
             const placement = parseSponsoredPlacement({
               name: sponsoredName,
               price: sponsoredPrice,
               days: sponsoredDays,
+              offer: hasOffer
+                ? {
+                    price: offerPrice,
+                    startsAt: fromLocalInput(offerStart),
+                    endsAt: fromLocalInput(offerEnd),
+                  }
+                : null,
             });
             if (typeof placement === "string") {
               flash("", placement);
@@ -410,6 +473,66 @@ export function SettingsManager({ initialKeys }: { initialKeys: GeminiKeyPublic[
               className="mt-1.5 w-full rounded-xl border border-line bg-ink px-3 py-2 text-sm outline-none focus:border-accent"
             />
           </label>
+          <fieldset className="grid gap-3 rounded-xl border border-line p-3 sm:col-span-2 sm:grid-cols-3">
+            <legend className="px-1 text-sm font-medium">Limited-time offer (optional)</legend>
+            <p className="text-xs text-muted sm:col-span-3">
+              The price above is the regular price, shown crossed out while the offer runs. The
+              Advertise page shows the discount percent and a countdown, then switches back to the
+              regular price on its own when the offer ends. Times are in your local time zone.
+            </p>
+            <label className="text-sm">
+              <span className="text-muted">Offer price (USD)</span>
+              <input
+                type="number"
+                inputMode="decimal"
+                min={SPONSORED_LIMITS.minPrice}
+                max={SPONSORED_LIMITS.maxPrice}
+                step="0.01"
+                value={offerPrice}
+                onChange={(event) => setOfferPrice(event.target.value)}
+                className="mt-1.5 w-full rounded-xl border border-line bg-ink px-3 py-2 text-sm outline-none focus:border-accent"
+              />
+            </label>
+            <label className="text-sm">
+              <span className="text-muted">Starts (optional, blank = now)</span>
+              <input
+                type="datetime-local"
+                value={offerStart}
+                onChange={(event) => setOfferStart(event.target.value)}
+                className="mt-1.5 w-full rounded-xl border border-line bg-ink px-3 py-2 text-sm outline-none focus:border-accent"
+              />
+            </label>
+            <label className="text-sm">
+              <span className="text-muted">Ends</span>
+              <input
+                type="datetime-local"
+                value={offerEnd}
+                onChange={(event) => setOfferEnd(event.target.value)}
+                className="mt-1.5 w-full rounded-xl border border-line bg-ink px-3 py-2 text-sm outline-none focus:border-accent"
+              />
+            </label>
+            <div className="flex flex-wrap items-center gap-3 text-xs sm:col-span-3">
+              {offerPreview ? (
+                <span className="rounded-full bg-mint/15 px-2.5 py-0.5 font-bold uppercase text-mint">
+                  {offerPreview}
+                </span>
+              ) : null}
+              {savedOfferStatus() ? <span className="text-muted">{savedOfferStatus()}</span> : null}
+              {offerPrice || offerStart || offerEnd ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOfferPrice("");
+                    setOfferStart("");
+                    setOfferEnd("");
+                  }}
+                  className="rounded-full border border-line px-3 py-1 text-muted hover:text-white"
+                >
+                  Remove offer
+                </button>
+              ) : null}
+            </div>
+          </fieldset>
           <button
             type="submit"
             disabled={busy === "sponsored"}

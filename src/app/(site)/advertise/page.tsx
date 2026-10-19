@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { BarChart3, Check, Globe2, Layers, ShieldCheck, Sparkles } from "lucide-react";
 import { AdvertiseCheckout } from "@/components/advertise/AdvertiseCheckout";
+import { SponsoredPrice } from "@/components/advertise/SponsoredPrice";
 import { formatUsd } from "@/lib/advertise";
 import { countryName } from "@/lib/country";
 import { paypalClientId, paypalConfigured } from "@/lib/paypal";
@@ -40,7 +41,7 @@ function formatDate(iso: string) {
 }
 
 export default async function AdvertisePage() {
-  const { stats, availability, placement } = await getAdvertiseData();
+  const { stats, availability, placement, renderedAt } = await getAdvertiseData();
   const clientId = paypalConfigured() ? paypalClientId() : "";
 
   const statCards = [
@@ -114,10 +115,7 @@ export default async function AdvertisePage() {
             <Sparkles className="h-3 w-3" /> Exclusive
           </p>
           <h2 className="mt-3 font-serif text-3xl">{placement.name}</h2>
-          <p className="mt-2">
-            <span className="font-serif text-4xl">{formatUsd(placement.price)}</span>
-            <span className="text-muted"> / {placement.days} days</span>
-          </p>
+          <SponsoredPrice placement={placement} renderedAt={renderedAt} />
           <ul className="mt-5 space-y-2.5 text-sm">
             {[
               "Sponsored banner directly under the homepage search box, the first thing visitors see",

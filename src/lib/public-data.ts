@@ -40,6 +40,7 @@ async function publicCatalog() {
     ads: liveAds(db.ads),
     availability: featuredAvailability(db),
     placement: sponsoredPlacement(db.settings),
+    renderedAt: Date.now(),
   };
 }
 
@@ -197,7 +198,12 @@ export async function getAdvertiseData() {
     visitors30d: traffic.visitors30d,
     topCountries: traffic.topCountries,
   };
-  return { stats, availability: catalog.availability, placement: catalog.placement };
+  return {
+    stats,
+    availability: catalog.availability,
+    placement: catalog.placement,
+    renderedAt: catalog.renderedAt,
+  };
 }
 
 export async function getSitemapData() {
