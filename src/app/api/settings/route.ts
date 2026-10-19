@@ -1,7 +1,14 @@
 import { NextResponse } from "next/server";
 import { requireAdminApi } from "@/lib/admin-auth";
+import { parseSponsoredPlacement, sponsoredPlacement } from "@/lib/advertise";
 import { maskGeminiKey } from "@/lib/crypto-auth";
-import { publicSeoSettings, readDb, updateSeoSettings, updateSettings } from "@/lib/db";
+import {
+  publicSeoSettings,
+  readDb,
+  updateSeoSettings,
+  updateSettings,
+  updateSponsoredPlacement,
+} from "@/lib/db";
 
 export async function GET() {
   const denied = await requireAdminApi();
@@ -12,6 +19,7 @@ export async function GET() {
     serperMasked: db.settings.serperApiKey ? maskGeminiKey(db.settings.serperApiKey) : "",
     cseMasked: db.settings.googleCseKey ? maskGeminiKey(db.settings.googleCseKey) : "",
     cseCx: db.settings.googleCseCx,
+    sponsored: sponsoredPlacement(db.settings),
   });
 }
 
@@ -26,7 +34,16 @@ export async function PATCH(request: Request) {
     googleCseCx?: string;
     homeSeoTitle?: string;
     homeSeoDescription?: string;
+    sponsored?: unknown;
   };
+
+  if (body.sponsored !== undefined) {
+    const placement = parseSponsoredPlacement(body.sponsored);
+    if (typeof placement === "string") {
+      return NextResponse.json({ error: placement }, { status: 400 });
+    }
+    return NextResponse.json({ sponsored: await updateSponsoredPlacement(placement) });
+  }
 
   if (body.epc !== undefined) {
     const epc = Number(body.epc);

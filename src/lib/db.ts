@@ -16,10 +16,11 @@ import { revalidateTag } from "next/cache";
 import { isAdLive, publicAd } from "@/lib/ads";
 import { PUBLIC_CACHE_TAG } from "@/lib/cache-tags";
 import {
-  HOMEPAGE_FEATURED,
+  sponsoredPlacement,
   type AdvertiseAvailability,
   type AdvertiseOrderInput,
   type AdvertiseStats,
+  type SponsoredPlacement,
 } from "@/lib/advertise";
 import type {
   AdCampaign,
@@ -418,6 +419,7 @@ function ensureCoreCatalog(db: Database) {
 }
 
 function normalizeSettings(raw?: Partial<AppSettings> | null): AppSettings {
+  const sponsored = sponsoredPlacement(raw);
   return {
     epc: Number(raw?.epc) || 0,
     adminPasswordHash: String(raw?.adminPasswordHash || ""),
@@ -429,6 +431,9 @@ function normalizeSettings(raw?: Partial<AppSettings> | null): AppSettings {
     homeSeoTitle: String(raw?.homeSeoTitle || DEFAULT_HOME_TITLE).trim() || DEFAULT_HOME_TITLE,
     homeSeoDescription:
       String(raw?.homeSeoDescription || DEFAULT_HOME_DESCRIPTION).trim() || DEFAULT_HOME_DESCRIPTION,
+    sponsoredName: sponsored.name,
+    sponsoredPrice: sponsored.price,
+    sponsoredDays: sponsored.days,
   };
 }
 
@@ -1413,6 +1418,21 @@ export async function getFeaturedAvailability() {
   return featuredAvailability(await readDb());
 }
 
+/** Current availability and the price/duration new orders are charged. */
+export async function getFeaturedCheckout() {
+  const db = await readDb();
+  return { availability: featuredAvailability(db), placement: sponsoredPlacement(db.settings) };
+}
+
+export async function updateSponsoredPlacement(placement: SponsoredPlacement) {
+  return withDb((db) => {
+    db.settings.sponsoredName = placement.name;
+    db.settings.sponsoredPrice = placement.price;
+    db.settings.sponsoredDays = placement.days;
+    return sponsoredPlacement(db.settings);
+  });
+}
+
 function trafficFromMemory(db: Database, since: number): Omit<AdvertiseStats, "publishedTools" | "categories"> {
   const recent = db.pageviews.filter((event) => new Date(event.timestamp).getTime() >= since);
   const countries = new Map<string, number>();
@@ -1438,15 +1458,16 @@ export async function hasAdPayment(paymentRef: string) {
 /** Records a paid homepage booking as a paused campaign awaiting editorial review. */
 export async function createPaidFeaturedAd(
   input: AdvertiseOrderInput,
-  payment: { orderId: string; captureId: string; payerEmail: string },
+  payment: { orderId: string; captureId: string; payerEmail: string; price: number; days: number },
 ) {
   return withDb((db) => {
     const existing = db.ads.find((ad) => ad.paymentRef === payment.orderId);
     if (existing) return existing;
     const now = new Date().toISOString();
+    const { name } = sponsoredPlacement(db.settings);
     const ad = normalizeAd({
       id: newId("ad"),
-      title: `${input.toolName} · ${HOMEPAGE_FEATURED.name}`,
+      title: `${input.toolName} · ${name}`,
       partnerName: input.toolName,
       partnershipType: "Paid Sponsorship ($)",
       placement: "hero_banner",
@@ -1455,10 +1476,10 @@ export async function createPaidFeaturedAd(
       ctaText: `Visit ${input.toolName}`,
       targetUrl: input.website,
       badgeText: "Sponsored",
-      commissionOrFeeNote: `PayPal capture ${payment.captureId} · $${HOMEPAGE_FEATURED.price} · ${HOMEPAGE_FEATURED.days} days from activation · contact ${input.email}${payment.payerEmail && payment.payerEmail !== input.email ? ` · payer ${payment.payerEmail}` : ""}`,
-      fixedFeeEarned: HOMEPAGE_FEATURED.price,
+      commissionOrFeeNote: `PayPal capture ${payment.captureId} · $${payment.price} · ${payment.days} days from activation · contact ${input.email}${payment.payerEmail && payment.payerEmail !== input.email ? ` · payer ${payment.payerEmail}` : ""}`,
+      fixedFeeEarned: payment.price,
       status: "paused",
-      paidDays: HOMEPAGE_FEATURED.days,
+      paidDays: payment.days,
       paymentRef: payment.orderId,
       contactEmail: input.email,
       createdAt: now,

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { parseAdvertiseOrder } from "@/lib/advertise";
-import { getFeaturedAvailability } from "@/lib/db";
+import { getFeaturedCheckout } from "@/lib/db";
 import { createFeaturedOrder, paypalConfigured } from "@/lib/paypal";
 
 export const maxDuration = 30;
@@ -14,9 +14,9 @@ export async function POST(request: Request) {
     if (!paypalConfigured()) return fail("Online checkout is not available yet.", 503);
     const input = parseAdvertiseOrder(await request.json().catch(() => null));
     if (typeof input === "string") return fail(input);
-    const availability = await getFeaturedAvailability();
+    const { availability, placement } = await getFeaturedCheckout();
     if (!availability.available) return fail("This placement is already booked.", 409);
-    const orderId = await createFeaturedOrder(input.toolName);
+    const orderId = await createFeaturedOrder(input.toolName, placement);
     return NextResponse.json({ orderId });
   } catch (error) {
     return fail(error instanceof Error ? error.message : "Could not start checkout.", 502);

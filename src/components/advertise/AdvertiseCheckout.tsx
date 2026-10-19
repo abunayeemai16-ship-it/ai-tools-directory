@@ -80,9 +80,11 @@ const EMPTY: AdvertiseOrderInput = {
 export function AdvertiseCheckout({
   clientId,
   available,
+  days,
 }: {
   clientId: string;
   available: boolean;
+  days: number;
 }) {
   const [form, setForm] = useState<AdvertiseOrderInput>(EMPTY);
   const [agreed, setAgreed] = useState(false);
@@ -171,7 +173,7 @@ export function AdvertiseCheckout({
         <h3 className="mt-3 font-serif text-2xl">Payment received</h3>
         <p className="mt-2 text-sm text-muted">
           Your booking is in our review queue. Once approved, your banner runs for{" "}
-          {HOMEPAGE_FEATURED.days} days. We will contact you at {form.email}. Your PayPal receipt
+          {days} days. We will contact you at {form.email}. Your PayPal receipt
           is your proof of purchase.
         </p>
       </div>

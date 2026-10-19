@@ -281,6 +281,9 @@ export type AppSettings = {
   googleCseCx: string;
   homeSeoTitle: string;
   homeSeoDescription: string;
+  sponsoredName: string;
+  sponsoredPrice: number;
+  sponsoredDays: number;
 };
 
 export type Database = {

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { parseAdvertiseOrder } from "@/lib/advertise";
-import { createPaidFeaturedAd, getFeaturedAvailability, hasAdPayment } from "@/lib/db";
+import { createPaidFeaturedAd, getFeaturedCheckout, hasAdPayment } from "@/lib/db";
 import { captureFeaturedOrder, paypalConfigured } from "@/lib/paypal";
 
 export const maxDuration = 30;
@@ -20,12 +20,12 @@ export async function POST(request: Request) {
 
     if (await hasAdPayment(orderId)) return NextResponse.json({ ok: true });
 
-    const availability = await getFeaturedAvailability();
+    const { availability, placement } = await getFeaturedCheckout();
     if (!availability.available) {
       return fail("This placement was booked a moment ago. You have not been charged.", 409);
     }
 
-    const payment = await captureFeaturedOrder(orderId);
+    const payment = await captureFeaturedOrder(orderId, placement);
     try {
       await createPaidFeaturedAd(input, { orderId, ...payment });
     } catch (error) {

@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { BarChart3, Check, Globe2, Layers, ShieldCheck, Sparkles } from "lucide-react";
 import { AdvertiseCheckout } from "@/components/advertise/AdvertiseCheckout";
-import { HOMEPAGE_FEATURED } from "@/lib/advertise";
+import { formatUsd } from "@/lib/advertise";
 import { countryName } from "@/lib/country";
 import { paypalClientId, paypalConfigured } from "@/lib/paypal";
 import { getAdvertiseData } from "@/lib/public-data";
@@ -10,10 +10,13 @@ import { formatNumber } from "@/lib/utils";
 
 export const instant = false;
 
-export const metadata: Metadata = {
-  title: "Advertise on Forge",
-  description: `Book the exclusive homepage sponsored placement on Forge AI Directory: $${HOMEPAGE_FEATURED.price} for ${HOMEPAGE_FEATURED.days} days.`,
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const { placement } = await getAdvertiseData();
+  return {
+    title: "Advertise on Forge",
+    description: `Book the exclusive homepage sponsored placement on Forge AI Directory: ${formatUsd(placement.price)} for ${placement.days} days.`,
+  };
+}
 
 const GUIDELINES = [
   "The product must be AI-related.",
@@ -23,19 +26,21 @@ const GUIDELINES = [
   "No “uncensored” or unfiltered AI tools.",
 ];
 
-const STEPS = [
-  "Fill in your banner details and pay securely with PayPal.",
-  "We review your product against the guidelines, usually within 2 business days.",
-  `Once approved, your banner goes live and runs for ${HOMEPAGE_FEATURED.days} days.`,
-  "If we reject the booking, we refund the full amount through PayPal.",
-];
+function steps(days: number) {
+  return [
+    "Fill in your banner details and pay securely with PayPal.",
+    "We review your product against the guidelines, usually within 2 business days.",
+    `Once approved, your banner goes live and runs for ${days} days.`,
+    "If we reject the booking, we refund the full amount through PayPal.",
+  ];
+}
 
 function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
 }
 
 export default async function AdvertisePage() {
-  const { stats, availability } = await getAdvertiseData();
+  const { stats, availability, placement } = await getAdvertiseData();
   const clientId = paypalConfigured() ? paypalClientId() : "";
 
   const statCards = [
@@ -108,17 +113,17 @@ export default async function AdvertisePage() {
           <p className="inline-flex items-center gap-1.5 rounded-full border border-accent/40 bg-accent/15 px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-accent">
             <Sparkles className="h-3 w-3" /> Exclusive
           </p>
-          <h2 className="mt-3 font-serif text-3xl">{HOMEPAGE_FEATURED.name}</h2>
+          <h2 className="mt-3 font-serif text-3xl">{placement.name}</h2>
           <p className="mt-2">
-            <span className="font-serif text-4xl">${HOMEPAGE_FEATURED.price}</span>
-            <span className="text-muted"> / {HOMEPAGE_FEATURED.days} days</span>
+            <span className="font-serif text-4xl">{formatUsd(placement.price)}</span>
+            <span className="text-muted"> / {placement.days} days</span>
           </p>
           <ul className="mt-5 space-y-2.5 text-sm">
             {[
               "Sponsored banner directly under the homepage search box, the first thing visitors see",
               "Exclusive: only one advertiser holds this slot at a time",
               "Your headline, short description, and link to your site",
-              `Runs ${HOMEPAGE_FEATURED.days} days from the day we approve it`,
+              `Runs ${placement.days} days from the day we approve it`,
               "Impression and click tracking for the full run",
             ].map((line) => (
               <li key={line} className="flex gap-2">
@@ -144,7 +149,11 @@ export default async function AdvertisePage() {
           <h2 className="font-serif text-2xl">Book this placement</h2>
           <p className="mt-1 text-sm text-muted">Pay with PayPal or a card through PayPal checkout.</p>
           <div className="mt-5">
-            <AdvertiseCheckout clientId={clientId} available={availability.available} />
+            <AdvertiseCheckout
+              clientId={clientId}
+              available={availability.available}
+              days={placement.days}
+            />
           </div>
         </div>
       </section>
@@ -153,7 +162,7 @@ export default async function AdvertisePage() {
         <div>
           <h2 className="font-serif text-2xl">How it works</h2>
           <ol className="mt-4 space-y-3 text-sm text-muted">
-            {STEPS.map((step, index) => (
+            {steps(placement.days).map((step, index) => (
               <li key={step} className="flex gap-3">
                 <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-accent/15 text-xs font-semibold text-accent">
                   {index + 1}

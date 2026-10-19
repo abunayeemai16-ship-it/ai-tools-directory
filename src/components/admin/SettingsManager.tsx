@@ -1,7 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Globe, KeyRound, Loader2, Shield, Trash2 } from "lucide-react";
+import { Globe, KeyRound, Loader2, Megaphone, Shield, Trash2 } from "lucide-react";
+import {
+  formatUsd,
+  HOMEPAGE_FEATURED,
+  parseSponsoredPlacement,
+  SPONSORED_LIMITS,
+  type SponsoredPlacement,
+} from "@/lib/advertise";
 import type { GeminiKeyPublic } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -45,6 +52,17 @@ export function SettingsManager({ initialKeys }: { initialKeys: GeminiKeyPublic[
   const [homeSeoDescription, setHomeSeoDescription] = useState("");
   const [serperMasked, setSerperMasked] = useState("");
   const [cseMasked, setCseMasked] = useState("");
+  const [sponsoredName, setSponsoredName] = useState("");
+  const [sponsoredPrice, setSponsoredPrice] = useState("");
+  const [sponsoredDays, setSponsoredDays] = useState("");
+  const [savedPlacement, setSavedPlacement] = useState<SponsoredPlacement | null>(null);
+
+  function showPlacement(placement: SponsoredPlacement) {
+    setSavedPlacement(placement);
+    setSponsoredName(placement.name);
+    setSponsoredPrice(String(placement.price));
+    setSponsoredDays(String(placement.days));
+  }
 
   const load = useCallback(async () => {
     const [keysRes, settingsRes] = await Promise.all([
@@ -63,7 +81,9 @@ export function SettingsManager({ initialKeys }: { initialKeys: GeminiKeyPublic[
         serperMasked?: string;
         cseMasked?: string;
         cseCx?: string;
+        sponsored?: SponsoredPlacement;
       };
+      if (data.sponsored) showPlacement(data.sponsored);
       setSiteDomain(data.siteDomain || "");
       setHomeSeoTitle(data.homeSeoTitle || "");
       setHomeSeoDescription(data.homeSeoDescription || "");
@@ -297,6 +317,107 @@ export function SettingsManager({ initialKeys }: { initialKeys: GeminiKeyPublic[
             ))}
           </ul>
         )}
+      </section>
+
+      <section className="space-y-4">
+        <div className="flex items-center gap-2">
+          <Megaphone className="h-4 w-4 text-accent" />
+          <h2 className="font-medium">Sponsored placement</h2>
+        </div>
+        <p className="text-sm text-muted">
+          Price and duration of the homepage sponsored banner sold on the Advertise page
+          {savedPlacement
+            ? ` (now ${formatUsd(savedPlacement.price)} / ${savedPlacement.days} days)`
+            : ""}
+          . Changes apply to new orders only; existing bookings keep what they paid for.
+        </p>
+        <form
+          onSubmit={async (event) => {
+            event.preventDefault();
+            const placement = parseSponsoredPlacement({
+              name: sponsoredName,
+              price: sponsoredPrice,
+              days: sponsoredDays,
+            });
+            if (typeof placement === "string") {
+              flash("", placement);
+              return;
+            }
+            setBusy("sponsored");
+            setError("");
+            try {
+              const res = await fetch("/api/settings", {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ sponsored: placement }),
+              });
+              const data = (await res.json().catch(() => ({}))) as {
+                sponsored?: SponsoredPlacement;
+                error?: string;
+              };
+              if (!res.ok || !data.sponsored) {
+                throw new Error(data.error || "Could not save sponsored placement");
+              }
+              showPlacement(data.sponsored);
+              flash("Sponsored placement saved");
+            } catch (err) {
+              flash("", err instanceof Error ? err.message : "Could not save sponsored placement");
+            } finally {
+              setBusy(null);
+            }
+          }}
+          className="grid gap-3 rounded-2xl border border-line bg-surface p-4 sm:grid-cols-2"
+        >
+          <label className="text-sm">
+            <span className="text-muted">
+              Price (USD, ${SPONSORED_LIMITS.minPrice}–${SPONSORED_LIMITS.maxPrice.toLocaleString("en-US")})
+            </span>
+            <input
+              type="number"
+              inputMode="decimal"
+              min={SPONSORED_LIMITS.minPrice}
+              max={SPONSORED_LIMITS.maxPrice}
+              step="0.01"
+              required
+              value={sponsoredPrice}
+              onChange={(event) => setSponsoredPrice(event.target.value)}
+              className="mt-1.5 w-full rounded-xl border border-line bg-ink px-3 py-2 text-sm outline-none focus:border-accent"
+            />
+          </label>
+          <label className="text-sm">
+            <span className="text-muted">
+              Duration (days, {SPONSORED_LIMITS.minDays}–{SPONSORED_LIMITS.maxDays})
+            </span>
+            <input
+              type="number"
+              inputMode="numeric"
+              min={SPONSORED_LIMITS.minDays}
+              max={SPONSORED_LIMITS.maxDays}
+              step="1"
+              required
+              value={sponsoredDays}
+              onChange={(event) => setSponsoredDays(event.target.value)}
+              className="mt-1.5 w-full rounded-xl border border-line bg-ink px-3 py-2 text-sm outline-none focus:border-accent"
+            />
+          </label>
+          <label className="text-sm sm:col-span-2">
+            <span className="text-muted">Placement name (optional)</span>
+            <input
+              value={sponsoredName}
+              onChange={(event) => setSponsoredName(event.target.value)}
+              maxLength={SPONSORED_LIMITS.name}
+              placeholder={HOMEPAGE_FEATURED.name}
+              className="mt-1.5 w-full rounded-xl border border-line bg-ink px-3 py-2 text-sm outline-none focus:border-accent"
+            />
+          </label>
+          <button
+            type="submit"
+            disabled={busy === "sponsored"}
+            className="sm:col-span-2 w-fit rounded-full bg-accent px-4 py-2 text-sm font-semibold text-ink disabled:opacity-60"
+          >
+            {busy === "sponsored" ? "Saving…" : "Save sponsored placement"}
+          </button>
+        </form>
       </section>
 
       <section className="space-y-4">

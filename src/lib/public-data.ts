@@ -1,6 +1,6 @@
 import { cacheLife, cacheTag } from "next/cache";
 import { liveAds } from "@/lib/ads";
-import type { AdvertiseStats } from "@/lib/advertise";
+import { sponsoredPlacement, type AdvertiseStats } from "@/lib/advertise";
 import { PUBLIC_CACHE_TAG } from "@/lib/cache-tags";
 import {
   featuredAvailability,
@@ -39,6 +39,7 @@ async function publicCatalog() {
     ),
     ads: liveAds(db.ads),
     availability: featuredAvailability(db),
+    placement: sponsoredPlacement(db.settings),
   };
 }
 
@@ -196,7 +197,7 @@ export async function getAdvertiseData() {
     visitors30d: traffic.visitors30d,
     topCountries: traffic.topCountries,
   };
-  return { stats, availability: catalog.availability };
+  return { stats, availability: catalog.availability, placement: catalog.placement };
 }
 
 export async function getSitemapData() {
