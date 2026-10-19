@@ -17,6 +17,7 @@ import {
   Search,
   Layers,
   Megaphone,
+  Swords,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -30,6 +31,7 @@ const items: {
   { href: "/admin", label: "Overview", icon: LayoutDashboard, exact: true },
   { href: "/admin/drafts", label: "Ready Drafts", icon: FileEdit, badge: "drafts" },
   { href: "/admin/generate", label: "AI Studio", icon: Sparkles },
+  { href: "/admin/compare-requests", label: "Visitor Compares", icon: Swords },
   { href: "/admin/scaler", label: "Bulk Scaler", icon: Layers },
   { href: "/admin/affiliates", label: "Affiliate Links & Tools", icon: MousePointerClick },
   { href: "/admin/ads", label: "Ad Runs & Partners", icon: Megaphone, badge: "bookings" },

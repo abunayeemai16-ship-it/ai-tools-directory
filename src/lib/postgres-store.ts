@@ -370,7 +370,8 @@ export async function loadAnalytics() {
       `SELECT ${EVENTS_VERSION_SQL} AS analytics`,
     );
     const res = await client.query<{ kind: string; data: never }>(
-      "SELECT kind, data FROM forge_events ORDER BY at",
+      "SELECT kind, data FROM forge_events WHERE kind = ANY($1::text[]) ORDER BY at",
+      [EVENT_KINDS.map((entry) => entry.kind)],
     );
     const value: AnalyticsSlice = { sessions: [], pageviews: [], clicks: [] };
     for (const row of res.rows) {
@@ -523,6 +524,91 @@ export async function appendAnalyticsEvent(
       [kind, event.id, event.timestamp, JSON.stringify(event)],
     ),
   );
+}
+
+/*
+ * Small non-analytics records (live comparisons, rate-limit counters) share forge_events under
+ * their own kinds, so they need no DDL and never touch the catalog row.
+ */
+
+export async function readRecord<T>(kind: string, id: string) {
+  return withClient(async (client) => {
+    const res = await client.query<{ data: T }>(
+      "SELECT data FROM forge_events WHERE kind = $1 AND id = $2",
+      [kind, id],
+    );
+    return res.rows[0]?.data ?? null;
+  });
+}
+
+export async function writeRecord(kind: string, id: string, at: string, data: unknown) {
+  await withClient((client) =>
+    client.query(
+      `INSERT INTO forge_events (kind, id, at, data) VALUES ($1, $2, $3::timestamptz, $4::jsonb)
+       ON CONFLICT (kind, id) DO UPDATE SET data = EXCLUDED.data, at = EXCLUDED.at`,
+      [kind, id, at, JSON.stringify(data)],
+    ),
+  );
+}
+
+export async function mergeRecord<T>(kind: string, id: string, patch: Record<string, unknown>) {
+  return withClient(async (client) => {
+    const res = await client.query<{ data: T }>(
+      "UPDATE forge_events SET data = data || $3::jsonb WHERE kind = $1 AND id = $2 RETURNING data",
+      [kind, id, JSON.stringify(patch)],
+    );
+    return res.rows[0]?.data ?? null;
+  });
+}
+
+export async function incrementRecordField(kind: string, id: string, field: string) {
+  await withClient((client) =>
+    client.query(
+      `UPDATE forge_events
+       SET data = jsonb_set(data, ARRAY[$3::text], to_jsonb(COALESCE((data->>$3)::int, 0) + 1))
+       WHERE kind = $1 AND id = $2`,
+      [kind, id, field],
+    ),
+  );
+}
+
+export async function listRecords<T>(kind: string, limit: number) {
+  return withClient(async (client) => {
+    const res = await client.query<{ data: T }>(
+      "SELECT data FROM forge_events WHERE kind = $1 ORDER BY at DESC LIMIT $2",
+      [kind, limit],
+    );
+    return res.rows.map((row) => row.data);
+  });
+}
+
+export async function deleteRecord(kind: string, id: string) {
+  await withClient((client) =>
+    client.query("DELETE FROM forge_events WHERE kind = $1 AND id = $2", [kind, id]),
+  );
+}
+
+export async function deleteRecordsBefore(kind: string, beforeIso: string) {
+  await withClient((client) =>
+    client.query("DELETE FROM forge_events WHERE kind = $1 AND at < $2::timestamptz", [
+      kind,
+      beforeIso,
+    ]),
+  );
+}
+
+/** Atomically adds one to a counter row and returns the new count. */
+export async function incrementCounter(kind: string, id: string, at: string) {
+  return withClient(async (client) => {
+    const res = await client.query<{ n: number }>(
+      `INSERT INTO forge_events (kind, id, at, data) VALUES ($1, $2, $3::timestamptz, '{"n":1}'::jsonb)
+       ON CONFLICT (kind, id) DO UPDATE
+         SET data = jsonb_build_object('n', COALESCE((forge_events.data->>'n')::int, 0) + 1)
+       RETURNING (data->>'n')::int AS n`,
+      [kind, id, at],
+    );
+    return res.rows[0]?.n ?? 1;
+  });
 }
 
 /** Inserts the session or merges `patch` into the existing one, server-side. */

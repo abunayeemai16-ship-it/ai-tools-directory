@@ -1,7 +1,8 @@
 import Link from "next/link";
 import type { Metadata } from "next";
 import { Swords } from "lucide-react";
-import { getCompareHubData } from "@/lib/public-data";
+import { getCompareHubData, getCompareSearchData } from "@/lib/public-data";
+import { CompareSearch } from "@/components/compare/CompareSearch";
 import { ToolLogo } from "@/components/tools/ToolLogo";
 
 export const instant = false;
@@ -13,7 +14,7 @@ export const metadata: Metadata = {
 };
 
 export default async function CompareHubPage() {
-  const entries = await getCompareHubData();
+  const [entries, search] = await Promise.all([getCompareHubData(), getCompareSearchData()]);
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-12 sm:px-6">
@@ -23,6 +24,9 @@ export default async function CompareHubPage() {
         Feature-level matchups with a clear winner badge so you can pick a stack
         without reading two marketing sites.
       </p>
+      <div className="mt-8">
+        <CompareSearch tools={search.tools} pairs={search.pairs} />
+      </div>
       <div className="mt-10 grid gap-4 md:grid-cols-2">
         {entries.map(({ comparison, toolA, toolB }) => (
           <Link

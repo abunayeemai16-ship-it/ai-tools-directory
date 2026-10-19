@@ -2,6 +2,7 @@ import { cacheLife, cacheTag } from "next/cache";
 import { liveAds } from "@/lib/ads";
 import { sponsoredPlacement, type AdvertiseStats } from "@/lib/advertise";
 import { PUBLIC_CACHE_TAG } from "@/lib/cache-tags";
+import { toolFinder } from "@/lib/compare";
 import {
   featuredAvailability,
   isPublished,
@@ -163,6 +164,40 @@ export async function getCompareHubData() {
     const pair = comparisonPair(catalog, comparison.toolASlug, comparison.toolBSlug);
     return pair ? [{ comparison, ...pair }] : [];
   });
+}
+
+/** Tool names for the compare box suggestions, plus published pairs to jump straight to. */
+export async function getCompareSearchData() {
+  const catalog = await publicCatalog();
+  return {
+    tools: catalog.tools
+      .map((tool) => ({ name: tool.name, slug: tool.slug }))
+      .sort((a, b) => a.name.localeCompare(b.name)),
+    pairs: catalog.comparisons
+      .filter((item) => comparisonPair(catalog, item.toolASlug, item.toolBSlug))
+      .map((item) => ({ slug: item.slug, a: item.toolASlug, b: item.toolBSlug })),
+  };
+}
+
+/** Directory data for a visitor-chosen pair; either side is null when it is not listed. */
+export async function getCustomCompareData(a: string, b: string) {
+  const catalog = await publicCatalog();
+  const findTool = toolFinder(catalog.tools);
+  const cardA = findTool(a);
+  const cardB = findTool(b);
+  const existing =
+    cardA && cardB
+      ? catalog.comparisons.find(
+          (item) =>
+            (item.toolASlug === cardA.slug && item.toolBSlug === cardB.slug) ||
+            (item.toolASlug === cardB.slug && item.toolBSlug === cardA.slug),
+        )
+      : undefined;
+  const [toolA, toolB] = await Promise.all([
+    cardA ? publicTool(cardA) : null,
+    cardB ? publicTool(cardB) : null,
+  ]);
+  return { toolA, toolB, existingSlug: existing?.slug ?? null, categories: catalog.categories };
 }
 
 export async function getComparisonSlugs() {
