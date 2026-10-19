@@ -1,14 +1,14 @@
 import { NextResponse } from "next/server";
 import { clickDestination } from "@/lib/categories";
 import { resolveCountry } from "@/lib/country";
-import { getToolBySlug, recordClick } from "@/lib/db";
+import { getRedirectTool, recordClick } from "@/lib/db";
 
 export async function GET(
   request: Request,
   { params }: { params: Promise<{ slug: string }> },
 ) {
   const { slug } = await params;
-  const tool = await getToolBySlug(slug);
+  const tool = await getRedirectTool(slug);
   const origin = new URL(request.url).origin;
 
   if (!tool || tool.status === "draft") {

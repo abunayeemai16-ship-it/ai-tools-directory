@@ -942,6 +942,17 @@ async function snapshotTool(card: Tool): Promise<{ tool: Tool | undefined; live:
   return { tool: tool && isPublished(tool) ? tool : undefined, live: !usesPostgres() };
 }
 
+/** Published tool for /go redirects, read from its own row instead of the full catalog. */
+export async function getRedirectTool(slug: string): Promise<Tool | undefined> {
+  if (!usesPostgres() || isBuildPhase()) return getToolBySlug(slug);
+  const { loadCatalogTool } = await postgresStore();
+  const { tool, ready } = await loadCatalogTool(slug);
+  if (!ready) return (await snapshotTool({ slug } as Tool)).tool;
+  if (tool) return isPublished(tool) ? normalizeTool(tool) : undefined;
+  const entry = CORE_CATALOG.find((item) => catalogSlug(item) === slug);
+  return entry ? expandCatalogEntry(entry, { status: "published" }) : undefined;
+}
+
 function liveTool(card: Tool, raw: Tool | null): Tool | undefined {
   if (raw) {
     if (!isPublished(raw)) return undefined;
