@@ -2,7 +2,7 @@
 
 import { Megaphone, Pause, Play, Plus, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AD_PLACEMENTS, PARTNERSHIP_TYPES, adCtr, campaignFromTool } from "@/lib/ads";
+import { AD_PLACEMENTS, PARTNERSHIP_TYPES, adCtr, campaignFromTool, isNewPaidBooking } from "@/lib/ads";
 import type { AdCampaign, AdPlacement, AdStatus, DirectoryCategory, PartnershipType, Tool } from "@/lib/types";
 import { formatNumber } from "@/lib/utils";
 
@@ -171,7 +171,14 @@ export function AdsManager({
     const impressions = ads.reduce((sum, ad) => sum + ad.impressions, 0);
     const clicks = ads.reduce((sum, ad) => sum + ad.clicks, 0);
     const live = ads.filter((ad) => ad.status === "active").length;
-    return { impressions, clicks, live, ctr: impressions ? Math.round((clicks / impressions) * 1000) / 10 : 0 };
+    const newBookings = ads.filter(isNewPaidBooking).length;
+    return {
+      impressions,
+      clicks,
+      live,
+      newBookings,
+      ctr: impressions ? Math.round((clicks / impressions) * 1000) / 10 : 0,
+    };
   }, [ads]);
 
   function applyTool(slug: string, current: Draft): Draft {
@@ -283,6 +290,14 @@ export function AdsManager({
         <Stat label="CTR" value={`${totals.ctr}%`} />
       </div>
 
+      {totals.newBookings > 0 ? (
+        <p className="rounded-xl border border-mint/30 bg-mint/10 px-4 py-3 text-sm text-mint">
+          {totals.newBookings === 1
+            ? "1 new paid booking is waiting for review."
+            : `${totals.newBookings} new paid bookings are waiting for review.`}{" "}
+          Press play to activate it (the paid days start then), or refund it in PayPal and delete it.
+        </p>
+      ) : null}
       {notice ? <p className="text-sm text-mint">{notice}</p> : null}
       {error ? <p className="text-sm text-rose">{error}</p> : null}
 
@@ -312,7 +327,14 @@ export function AdsManager({
               ads.map((ad) => (
                 <tr key={ad.id} className="border-t border-line">
                   <td className="px-4 py-3">
-                    <p className="font-medium">{ad.title}</p>
+                    <p className="font-medium">
+                      {ad.title}
+                      {isNewPaidBooking(ad) ? (
+                        <span className="ml-2 rounded-full bg-mint px-2 py-0.5 align-middle text-[10px] font-bold uppercase tracking-wide text-ink">
+                          New booking
+                        </span>
+                      ) : null}
+                    </p>
                     <p className="text-xs text-muted">
                       {ad.partnerName}
                       {ad.toolSlug ? ` · /tool/${ad.toolSlug}` : " · external partner"}

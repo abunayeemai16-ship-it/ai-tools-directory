@@ -25,14 +25,14 @@ const items: {
   label: string;
   icon: typeof LayoutDashboard;
   exact?: boolean;
-  badge?: boolean;
+  badge?: "drafts" | "bookings";
 }[] = [
   { href: "/admin", label: "Overview", icon: LayoutDashboard, exact: true },
-  { href: "/admin/drafts", label: "Ready Drafts", icon: FileEdit, badge: true },
+  { href: "/admin/drafts", label: "Ready Drafts", icon: FileEdit, badge: "drafts" },
   { href: "/admin/generate", label: "AI Studio", icon: Sparkles },
   { href: "/admin/scaler", label: "Bulk Scaler", icon: Layers },
   { href: "/admin/affiliates", label: "Affiliate Links & Tools", icon: MousePointerClick },
-  { href: "/admin/ads", label: "Ad Runs & Partners", icon: Megaphone },
+  { href: "/admin/ads", label: "Ad Runs & Partners", icon: Megaphone, badge: "bookings" },
   { href: "/admin/categories", label: "Categories", icon: Tags },
   { href: "/admin/seo", label: "Web SEO", icon: Search },
   { href: "/admin/submissions", label: "Submissions", icon: Inbox },
@@ -47,20 +47,25 @@ export function AdminSidebar({
   const pathname = usePathname();
   const router = useRouter();
   const [draftCount, setDraftCount] = useState(initialDraftCount);
+  const [bookingCount, setBookingCount] = useState(0);
 
   useEffect(() => {
-    async function load() {
+    async function poll(url: string, set: (count: number) => void) {
       try {
-        const res = await fetch("/api/drafts", { cache: "no-store" });
+        const res = await fetch(url, { cache: "no-store" });
         if (!res.ok) return;
         const data = (await res.json()) as { count?: number };
-        setDraftCount(Number(data.count) || 0);
+        set(Number(data.count) || 0);
       } catch {
         // Slow/offline admin poll must not crash the overlay.
       }
     }
-    void load();
-    const id = window.setInterval(() => void load(), 15_000);
+    function load() {
+      void poll("/api/drafts", setDraftCount);
+      void poll("/api/admin/bookings", setBookingCount);
+    }
+    load();
+    const id = window.setInterval(load, 15_000);
     return () => window.clearInterval(id);
   }, []);
 
@@ -100,9 +105,14 @@ export function AdminSidebar({
             >
               <Icon className="h-4 w-4" />
               {item.label}
-              {item.badge && draftCount > 0 ? (
+              {item.badge === "drafts" && draftCount > 0 ? (
                 <span className="ml-auto rounded-full bg-accent px-1.5 py-0.5 text-[10px] font-bold text-ink">
                   {draftCount}
+                </span>
+              ) : null}
+              {item.badge === "bookings" && bookingCount > 0 ? (
+                <span className="ml-auto rounded-full bg-mint px-1.5 py-0.5 text-[10px] font-bold text-ink">
+                  {bookingCount} new
                 </span>
               ) : null}
             </Link>

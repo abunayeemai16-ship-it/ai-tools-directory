@@ -18,6 +18,11 @@ export function adCtr(ad: Pick<AdCampaign, "impressions" | "clicks">) {
   return Math.round((ad.clicks / ad.impressions) * 1000) / 10;
 }
 
+/** Paid through the Advertise page and still waiting for the admin to activate it. */
+export function isNewPaidBooking(ad: Pick<AdCampaign, "paymentRef" | "status" | "endDate">) {
+  return Boolean(ad.paymentRef) && ad.status === "paused" && !ad.endDate;
+}
+
 export function isAdLive(ad: AdCampaign, now = Date.now()) {
   if (ad.status !== "active") return false;
   if (ad.startDate) {

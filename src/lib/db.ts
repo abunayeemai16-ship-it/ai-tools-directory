@@ -13,7 +13,7 @@ import catalogSnapshotSeed from "@/lib/data/catalog-snapshot.json";
 import { tools as seedTools } from "@/lib/data/tools";
 import { clampRating, clampReviewCount, slugify } from "@/lib/utils";
 import { revalidateTag } from "next/cache";
-import { isAdLive, publicAd } from "@/lib/ads";
+import { isAdLive, isNewPaidBooking, publicAd } from "@/lib/ads";
 import { PUBLIC_CACHE_TAG } from "@/lib/cache-tags";
 import {
   sponsoredPlacement,
@@ -1396,8 +1396,11 @@ export async function listLiveAds(placement?: AdPlacement, category?: string) {
     .map(publicAd);
 }
 
-function isPendingPaidBooking(ad: AdCampaign) {
-  return Boolean(ad.paymentRef) && ad.status === "paused" && !ad.endDate;
+const isPendingPaidBooking = isNewPaidBooking;
+
+export async function countNewBookings() {
+  const db = await readDb();
+  return db.ads.filter(isNewPaidBooking).length;
 }
 
 export function featuredAvailability(db: Database): AdvertiseAvailability {

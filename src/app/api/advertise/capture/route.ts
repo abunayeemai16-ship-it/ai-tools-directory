@@ -1,6 +1,7 @@
-import { NextResponse } from "next/server";
+import { after, NextResponse } from "next/server";
 import { parseAdvertiseOrder } from "@/lib/advertise";
 import { createPaidFeaturedAd, getFeaturedCheckout, hasAdPayment } from "@/lib/db";
+import { sendBookingAlert } from "@/lib/notify";
 import { captureFeaturedOrder, paypalConfigured } from "@/lib/paypal";
 
 export const maxDuration = 30;
@@ -30,11 +31,13 @@ export async function POST(request: Request) {
       await createPaidFeaturedAd(input, { orderId, ...payment });
     } catch (error) {
       console.error("[advertise] paid booking not saved", { orderId, input, payment, error });
+      after(() => sendBookingAlert({ ...input, ...payment, orderId, saveFailed: true }));
       return fail(
         `Payment received (PayPal order ${orderId}) but the booking could not be saved. Reply to your PayPal receipt and we will activate it manually.`,
         500,
       );
     }
+    after(() => sendBookingAlert({ ...input, ...payment, orderId }));
     return NextResponse.json({ ok: true });
   } catch (error) {
     return fail(error instanceof Error ? error.message : "Payment could not be completed.", 502);
