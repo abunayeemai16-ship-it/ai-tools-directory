@@ -89,27 +89,32 @@ function getPool() {
 
 async function ensureSchema(runner: Runner) {
   if (schemaReady) return;
-  await runner.query(`
-    CREATE TABLE IF NOT EXISTS forge_kv (
-      key TEXT PRIMARY KEY,
-      value JSONB NOT NULL,
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `);
-  // Checking the big rows for leftover keys would detoast megabytes on every cold start;
-  // a tiny marker row records that the migration already ran.
-  const marker = await runner.query<{ version: number | null }>(
-    "SELECT (value->>'version')::int AS version FROM forge_kv WHERE key = $1",
+  // DDL takes table locks that queue every later query, so the steady state is one tiny SELECT
+  // and tables are only created when missing.
+  const marker = await runner.query<{ version: number | null; missing: boolean }>(
+    `SELECT (SELECT (value->>'version')::int FROM forge_kv WHERE key = $1) AS version,
+            to_regclass('forge_tools') IS NULL OR to_regclass('forge_events') IS NULL AS missing`,
     [SCHEMA_KEY],
-  );
-  if ((marker.rows[0]?.version ?? 0) >= SCHEMA_VERSION) {
+  ).catch(async (error: { code?: string }) => {
+    if (error.code !== "42P01") throw error;
+    await runner.query(`
+      CREATE TABLE IF NOT EXISTS forge_kv (
+        key TEXT PRIMARY KEY,
+        value JSONB NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    return { rows: [{ version: null, missing: true }] };
+  });
+  const { version, missing } = marker.rows[0] ?? { version: null, missing: true };
+  if (missing) await createTables(runner);
+  if ((version ?? 0) >= SCHEMA_VERSION) {
     schemaReady = true;
     return;
   }
   // One instance runs the move, everyone else carries on, and a failure never fails the request.
-  if (Date.now() - migrationFailedAt < 10 * 60_000) return;
+  if (Date.now() - migrationFailedAt < 60_000) return;
   try {
-    await createTables(runner);
     await runner.query("BEGIN");
     const lock = await runner.query<{ locked: boolean }>(
       "SELECT pg_try_advisory_xact_lock($1) AS locked",
@@ -117,6 +122,7 @@ async function ensureSchema(runner: Runner) {
     );
     if (!lock.rows[0]?.locked) {
       await runner.query("ROLLBACK");
+      migrationFailedAt = Date.now();
       return;
     }
     await runner.query("SET LOCAL statement_timeout = '45s'");
@@ -138,24 +144,25 @@ async function ensureSchema(runner: Runner) {
 
 async function createTables(runner: Runner) {
   await runner.query(`
-    CREATE TABLE IF NOT EXISTS forge_tools (
-      slug TEXT PRIMARY KEY,
-      hash TEXT NOT NULL,
-      data JSONB NOT NULL
-    )
+    DO $$
+    BEGIN
+      IF to_regclass('forge_tools') IS NULL THEN
+        CREATE TABLE forge_tools (slug TEXT PRIMARY KEY, hash TEXT NOT NULL, data JSONB NOT NULL);
+        ALTER TABLE forge_tools ENABLE ROW LEVEL SECURITY;
+      END IF;
+      IF to_regclass('forge_events') IS NULL THEN
+        CREATE TABLE forge_events (
+          kind TEXT NOT NULL,
+          id TEXT NOT NULL,
+          at TIMESTAMPTZ NOT NULL,
+          data JSONB NOT NULL,
+          PRIMARY KEY (kind, id)
+        );
+        CREATE INDEX forge_events_kind_at ON forge_events (kind, at);
+        ALTER TABLE forge_events ENABLE ROW LEVEL SECURITY;
+      END IF;
+    END $$
   `);
-  await runner.query("ALTER TABLE forge_tools ENABLE ROW LEVEL SECURITY");
-  await runner.query(`
-    CREATE TABLE IF NOT EXISTS forge_events (
-      kind TEXT NOT NULL,
-      id TEXT NOT NULL,
-      at TIMESTAMPTZ NOT NULL,
-      data JSONB NOT NULL,
-      PRIMARY KEY (kind, id)
-    )
-  `);
-  await runner.query("CREATE INDEX IF NOT EXISTS forge_events_kind_at ON forge_events (kind, at)");
-  await runner.query("ALTER TABLE forge_events ENABLE ROW LEVEL SECURITY");
 }
 
 function eventTime(field: string) {
