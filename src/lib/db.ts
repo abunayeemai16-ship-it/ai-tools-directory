@@ -12,9 +12,9 @@ import { seedComparisonDrafts, seedToolDrafts } from "@/lib/data/seed-drafts";
 import catalogSnapshotSeed from "@/lib/data/catalog-snapshot.json";
 import { tools as seedTools } from "@/lib/data/tools";
 import { clampRating, clampReviewCount, slugify } from "@/lib/utils";
-import { revalidateTag } from "next/cache";
+import { revalidatePath, revalidateTag } from "next/cache";
 import { isAdLive, isNewPaidBooking, publicAd } from "@/lib/ads";
-import { PUBLIC_CACHE_TAG } from "@/lib/cache-tags";
+import { ADVERTISE_CACHE_TAG, PUBLIC_CACHE_TAG } from "@/lib/cache-tags";
 import {
   sponsoredPlacement,
   type AdvertiseAvailability,
@@ -110,8 +110,18 @@ function contentSnapshot(db: Database) {
 function revalidatePublicPages() {
   try {
     revalidateTag(PUBLIC_CACHE_TAG, { expire: 0 });
+    revalidateTag(ADVERTISE_CACHE_TAG, { expire: 0 });
   } catch {
     // Outside a request scope (build, scripts): nothing cached to invalidate.
+  }
+}
+
+function revalidateAdvertisePage() {
+  try {
+    revalidateTag(ADVERTISE_CACHE_TAG, { expire: 0 });
+    revalidatePath("/advertise");
+  } catch {
+    // Outside a request scope: nothing cached to invalidate.
   }
 }
 
@@ -1433,7 +1443,7 @@ export async function getFeaturedCheckout() {
 }
 
 export async function updateSponsoredPlacement(placement: SponsoredPlacement) {
-  return withDb((db) => {
+  const saved = await withDb((db) => {
     db.settings.sponsoredName = placement.name;
     db.settings.sponsoredPrice = placement.price;
     db.settings.sponsoredDays = placement.days;
@@ -1442,6 +1452,9 @@ export async function updateSponsoredPlacement(placement: SponsoredPlacement) {
     db.settings.sponsoredOfferEnd = placement.offer?.endsAt ?? "";
     return sponsoredPlacement(db.settings);
   });
+  // CDN may still hold the old /advertise HTML after a tag-only invalidation; bust the path too.
+  revalidateAdvertisePage();
+  return saved;
 }
 
 function trafficFromMemory(db: Database, since: number): Omit<AdvertiseStats, "publishedTools" | "categories"> {

@@ -1,7 +1,7 @@
 import { cacheLife, cacheTag } from "next/cache";
 import { liveAds } from "@/lib/ads";
 import { sponsoredPlacement, type AdvertiseStats } from "@/lib/advertise";
-import { PUBLIC_CACHE_TAG } from "@/lib/cache-tags";
+import { ADVERTISE_CACHE_TAG, PUBLIC_CACHE_TAG } from "@/lib/cache-tags";
 import { toolFinder } from "@/lib/compare";
 import {
   featuredAvailability,
@@ -21,16 +21,12 @@ import type { DirectoryCard, Tool } from "@/lib/types";
  * PUBLIC_CACHE_TAG is invalidated by catalog writes in db.ts.
  */
 
-function isBuildPhase() {
-  return process.env.NEXT_PHASE === "phase-production-build";
-}
-
 async function publicCatalog() {
   "use cache";
   cacheTag(PUBLIC_CACHE_TAG);
   const { db, live } = await loadPublicDb();
-  // Build + live Postgres: 24h CDN TTL. Runtime DB-down empty fallback stays short-lived.
-  if (live || isBuildPhase()) cacheLife("days");
+  // Live Postgres: 24h CDN. Build/empty snapshot stays short so defaults like $149 never pin for a day.
+  if (live) cacheLife("days");
   else cacheLife("minutes");
   const tools = db.tools.filter(isPublished);
   const published = new Set(tools.map((tool) => tool.slug));
@@ -54,7 +50,7 @@ async function publicTool(card: DirectoryCard) {
   "use cache";
   cacheTag(PUBLIC_CACHE_TAG);
   const { tool, live } = await loadPublicTool(card);
-  if (live || isBuildPhase()) cacheLife("days");
+  if (live) cacheLife("days");
   else cacheLife("minutes");
   return tool ?? null;
 }
@@ -64,9 +60,29 @@ async function trafficSummary() {
   cacheTag(PUBLIC_CACHE_TAG);
   const summary = await loadTrafficSummary();
   // Advertise-page stats; weekly is enough and avoids daily forge_events scans.
-  if (summary.live || isBuildPhase()) cacheLife("weeks");
+  if (summary.live) cacheLife("weeks");
   else cacheLife("minutes");
   return summary;
+}
+
+/**
+ * Price, offer, and slot availability for /advertise.
+ * Kept off the 24h catalog cache: CDN s-maxage ignores revalidateTag until TTL ends, so a
+ * long TTL made admin "Sponsored placement" saves look like they never applied.
+ */
+async function advertiseCheckout() {
+  "use cache";
+  cacheTag(PUBLIC_CACHE_TAG);
+  cacheTag(ADVERTISE_CACHE_TAG);
+  cacheLife({ stale: 60, revalidate: 60, expire: 600 });
+  const { db } = await loadPublicDb();
+  return {
+    placement: sponsoredPlacement(db.settings),
+    availability: featuredAvailability(db),
+    renderedAt: Date.now(),
+    publishedTools: db.tools.filter(isPublished).length,
+    categoryCount: db.categories.length,
+  };
 }
 
 /** Only the fields cards render; long review text and affiliate data stay on the server. */
@@ -217,19 +233,19 @@ export async function getPublicCategories() {
 }
 
 export async function getAdvertiseData() {
-  const [catalog, traffic] = await Promise.all([publicCatalog(), trafficSummary()]);
+  const [checkout, traffic] = await Promise.all([advertiseCheckout(), trafficSummary()]);
   const stats: AdvertiseStats = {
-    publishedTools: catalog.tools.length,
-    categories: catalog.categories.length,
+    publishedTools: checkout.publishedTools,
+    categories: checkout.categoryCount,
     pageviews30d: traffic.pageviews30d,
     visitors30d: traffic.visitors30d,
     topCountries: traffic.topCountries,
   };
   return {
     stats,
-    availability: catalog.availability,
-    placement: catalog.placement,
-    renderedAt: catalog.renderedAt,
+    availability: checkout.availability,
+    placement: checkout.placement,
+    renderedAt: checkout.renderedAt,
   };
 }
 
