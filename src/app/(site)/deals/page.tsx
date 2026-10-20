@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { DealCard } from "@/components/deals/DealCard";
+import { live } from "@/lib/live";
 import { getDealsData } from "@/lib/public-data";
 
 export const instant = false;
@@ -11,6 +12,8 @@ export const metadata: Metadata = {
 };
 
 export default async function DealsPage() {
+  // Admin clears must show up on refresh — skip the 24h directory CDN cache.
+  await live();
   const { deals, categories } = await getDealsData();
 
   return (

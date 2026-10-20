@@ -6,6 +6,7 @@ import { toolFinder } from "@/lib/compare";
 import {
   featuredAvailability,
   isPublished,
+  listClearedDealSlugs,
   loadPublicDb,
   loadPublicTool,
   loadTrafficSummary,
@@ -221,26 +222,23 @@ export async function getComparisonPageData(slug: string) {
 }
 
 /**
- * Deals change when admin clears coupons; keep TTL short so CDN s-maxage cannot
- * ignore revalidateTag the way the 24h directory catalog cache can.
+ * Live deals — not CDN-cached.
+ * Cleared-deal tombstones always win, even if coupon fields were written back by a stale catalog save.
  */
-async function publicDeals() {
-  "use cache";
-  cacheTag(PUBLIC_CACHE_TAG);
-  const { db, live } = await loadPublicDb();
-  if (live) cacheLife({ stale: 60, revalidate: 60, expire: 600 });
-  else cacheLife("minutes");
+export async function getDealsData() {
+  const [{ db }, clearedList] = await Promise.all([loadPublicDb(), listClearedDealSlugs()]);
+  const cleared = new Set(clearedList);
   const tools = db.tools.filter(isPublished);
   return {
     deals: tools
-      .filter((tool) => Boolean(tool.couponCode || tool.dealText || tool.couponDiscount))
+      .filter(
+        (tool) =>
+          Boolean(tool.couponCode || tool.dealText || tool.couponDiscount) &&
+          !cleared.has(tool.slug),
+      )
       .map(toDealCard),
     categories: [...db.categories].sort((a, b) => a.sortOrder - b.sortOrder),
   };
-}
-
-export async function getDealsData() {
-  return publicDeals();
 }
 
 export async function getPublicCategories() {

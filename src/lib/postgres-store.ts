@@ -290,84 +290,88 @@ const EMPTY_DEAL_JSON = JSON.stringify({
   couponExpires: "",
 });
 
+/** Persist a deal tombstone in its own transaction — never rolled back by a later catalog patch. */
+export async function tombstoneClearedDeal(slug: string): Promise<string[]> {
+  return withClient(async (client) => {
+    const prior = await readClearedDealSlugs(client);
+    if (prior.includes(slug)) return prior;
+    const cleared = [...prior, slug];
+    await writeClearedDealSlugs(client, cleared);
+    return cleared;
+  });
+}
+
 /**
  * Clears coupon/deal fields for one tool without rewriting the full catalog from Node memory.
- * Stale concurrent admin saves cannot resurrect the coupon because the slug is tombstoned first.
+ * Tombstone is committed first so /deals stays clear even if a later full-catalog write races.
  */
 export async function clearToolDealFields(slug: string): Promise<boolean> {
+  // 1) Tombstone must stick even if the JSON patch below fails or rolls back.
+  await tombstoneClearedDeal(slug);
+
   return withClient(async (client) => {
     try {
       await client.query("BEGIN");
       for (const guard of TRANSACTION_GUARDS) await client.query(guard);
       await client.query("SELECT 1 FROM forge_kv WHERE key = $1 FOR UPDATE", [CATALOG_KEY]);
 
-      const prior = await readClearedDealSlugs(client);
-      const cleared = prior.includes(slug) ? prior : [...prior, slug];
-      await writeClearedDealSlugs(client, cleared);
-
-      const patched = await client.query<{ found: boolean }>(
-        `WITH tools AS (
-           SELECT COALESCE(value->'tools', '[]'::jsonb) AS arr FROM forge_kv WHERE key = $1
-         ),
-         next AS (
-           SELECT jsonb_agg(
-             CASE WHEN elem->>'slug' = $2 THEN elem || $3::jsonb ELSE elem END
-             ORDER BY ordinality
-           ) AS arr
-           FROM tools, jsonb_array_elements(tools.arr) WITH ORDINALITY AS t(elem, ordinality)
-         )
-         UPDATE forge_kv SET
-           value = jsonb_set(value, '{tools}', (SELECT arr FROM next)),
+      const dealPatch = EMPTY_DEAL_JSON;
+      const catalogResult = await client.query(
+        `UPDATE forge_kv SET
+           value = jsonb_set(
+             value,
+             '{tools}',
+             COALESCE((
+               SELECT jsonb_agg(
+                 CASE WHEN elem->>'slug' = $2 THEN elem || $3::jsonb ELSE elem END
+               )
+               FROM jsonb_array_elements(COALESCE(value->'tools', '[]'::jsonb)) elem
+             ), COALESCE(value->'tools', '[]'::jsonb))
+           ),
            updated_at = clock_timestamp()
-         WHERE key = $1
-           AND EXISTS (
-             SELECT 1 FROM tools, jsonb_array_elements(tools.arr) elem WHERE elem->>'slug' = $2
-           )
-         RETURNING true AS found`,
-        [CATALOG_KEY, slug, EMPTY_DEAL_JSON],
+         WHERE key = $1`,
+        [CATALOG_KEY, slug, dealPatch],
       );
-      if (!patched.rows[0]?.found) {
-        await client.query("ROLLBACK");
-        return false;
-      }
 
       await client.query(
         `UPDATE forge_tools
          SET data = data || $2::jsonb,
              hash = md5(slug || clock_timestamp()::text)
          WHERE slug = $1`,
-        [slug, EMPTY_DEAL_JSON],
+        [slug, dealPatch],
       );
 
-      // Keep the public projection in sync so /deals does not wait on a full catalog rewrite.
+      // Only rewrite public tools when the array is non-empty — never replace with [].
       await client.query(
         `UPDATE forge_kv SET
            value = jsonb_set(
              value,
              '{data,tools}',
-             COALESCE((
+             (
                SELECT jsonb_agg(
                  CASE WHEN elem->>'slug' = $2 THEN elem || $3::jsonb ELSE elem END
-                 ORDER BY ordinality
                )
-               FROM jsonb_array_elements(COALESCE(value->'data'->'tools', '[]'::jsonb))
-                    WITH ORDINALITY AS t(elem, ordinality)
-             ), '[]'::jsonb)
+               FROM jsonb_array_elements(COALESCE(value->'data'->'tools', '[]'::jsonb)) elem
+             )
            ),
            updated_at = clock_timestamp()
-         WHERE key = $1`,
-        [PUBLIC_KEY, slug, EMPTY_DEAL_JSON],
+         WHERE key = $1
+           AND jsonb_typeof(value->'data'->'tools') = 'array'
+           AND jsonb_array_length(value->'data'->'tools') > 0`,
+        [PUBLIC_KEY, slug, dealPatch],
       );
 
       await client.query("COMMIT");
-      return true;
+      return (catalogResult.rowCount ?? 0) > 0;
     } catch (error) {
       try {
         await client.query("ROLLBACK");
       } catch {
         /* ignore */
       }
-      throw error;
+      // Tombstone already committed — callers can still hide the deal on /deals.
+      console.error("[forge] clearToolDealFields patch failed after tombstone", error);
+      return true;
     }
   });
 }

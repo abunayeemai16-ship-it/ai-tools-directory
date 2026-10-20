@@ -820,6 +820,20 @@ async function syncClearedDealsInto(db: Database) {
   }
 }
 
+/** Slugs whose coupons were cleared in admin — /deals must never show these. */
+export async function listClearedDealSlugs(): Promise<string[]> {
+  if (!usesPostgres()) {
+    const db = await ensureMemory();
+    return db.settings.clearedDealSlugs ?? [];
+  }
+  try {
+    const { loadClearedDealSlugs } = await postgresStore();
+    return loadClearedDealSlugs();
+  } catch {
+    return [];
+  }
+}
+
 async function ensureMemory() {
   if (process.env.VERCEL && !usesPostgres() && !vercelPersistWarned) {
     vercelPersistWarned = true;
@@ -2076,7 +2090,8 @@ export async function clearToolDeal(slug: string) {
   if (usesPostgres()) {
     try {
       const store = await postgresStore();
-      const ok = await store.clearToolDealFields(slug);
+      // Tombstone + best-effort field patch (tombstone commits even if patch fails).
+      await store.clearToolDealFields(slug);
       // Drop in-memory catalog so the next admin read cannot resurrect the coupon.
       memory = null;
       catalogVersion = null;
@@ -2086,12 +2101,11 @@ export async function clearToolDeal(slug: string) {
       } catch {
         /* outside request scope */
       }
-      if (!ok) return null;
-      return (await getToolBySlug(slug, { includeDrafts: true })) ?? null;
     } catch (error) {
       console.error("[forge] surgical clearToolDeal failed, falling back", error);
     }
   }
+  // Always run updateTool so settings.clearedDealSlugs + tool fields stay consistent in-catalog.
   return updateTool(slug, {
     clearDeal: true,
     couponCode: "",
