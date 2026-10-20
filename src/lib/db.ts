@@ -234,6 +234,16 @@ function normalizeCategory(raw: Partial<DirectoryCategory>, index = 0): Director
   };
 }
 
+/**
+ * Prefer the primary field when it is present (including ""), so clearing a deal in admin
+ * cannot be revived from the twin couponDiscount/dealText field via `||`.
+ */
+function coalesceDealText(primary: unknown, fallback: unknown) {
+  if (typeof primary === "string") return primary.trim();
+  if (typeof fallback === "string") return fallback.trim();
+  return "";
+}
+
 function normalizeTool(raw: Partial<Tool> & Pick<Tool, "slug" | "name">): Tool {
   const officialUrl = raw.officialUrl?.trim() || raw.website?.trim() || "";
   let affiliateUrl = (raw.affiliateUrl || "").trim();
@@ -251,7 +261,7 @@ function normalizeTool(raw: Partial<Tool> & Pick<Tool, "slug" | "name">): Tool {
     affiliateUrl,
     affiliateNetwork: raw.affiliateNetwork || "",
     commissionNote: raw.commissionNote || "",
-    dealText: raw.dealText || raw.couponDiscount || "",
+    dealText: coalesceDealText(raw.dealText, raw.couponDiscount),
     shortPitch: raw.shortPitch || "",
     overview: raw.overview || raw.shortPitch || "",
     category: migrateCategorySlug(raw.category),
@@ -270,9 +280,9 @@ function normalizeTool(raw: Partial<Tool> & Pick<Tool, "slug" | "name">): Tool {
     seoTitle: raw.seoTitle || `${raw.name} Review`,
     metaDescription: raw.metaDescription || (raw.shortPitch || "").slice(0, 155),
     conversionNote: raw.conversionNote || "",
-    couponCode: raw.couponCode,
-    couponDiscount: raw.dealText || raw.couponDiscount,
-    couponExpires: raw.couponExpires,
+    couponCode: typeof raw.couponCode === "string" ? raw.couponCode.trim() : "",
+    couponDiscount: coalesceDealText(raw.couponDiscount, raw.dealText),
+    couponExpires: typeof raw.couponExpires === "string" ? raw.couponExpires.trim() : raw.couponExpires,
     targetKeyword: raw.targetKeyword || "",
     status: raw.status === "draft" ? "draft" : "published",
     createdAt: raw.createdAt || publishedStamp(),
@@ -390,6 +400,7 @@ function injectSeedDrafts(db: Database) {
 
 function ensureCoreCatalog(db: Database) {
   let dirty = false;
+  const removed = new Set(db.settings.removedToolSlugs ?? []);
   const bySlug = new Map(db.tools.map((tool) => [tool.slug, tool]));
   const byName = new Map(db.tools.map((tool) => [tool.name.trim().toLowerCase(), tool]));
 
@@ -408,6 +419,8 @@ function ensureCoreCatalog(db: Database) {
       }
       continue;
     }
+    // Admin deleted this core tool on purpose — do not re-seed it.
+    if (removed.has(slug)) continue;
     const tool = expandCatalogEntry(entry, { status: "published" });
     db.tools.push(tool);
     bySlug.set(tool.slug, tool);
@@ -447,7 +460,37 @@ function normalizeSettings(raw?: Partial<AppSettings> | null): AppSettings {
     sponsoredOfferPrice: sponsored.offer?.price ?? 0,
     sponsoredOfferStart: sponsored.offer?.startsAt ?? "",
     sponsoredOfferEnd: sponsored.offer?.endsAt ?? "",
+    removedToolSlugs: Array.isArray(raw?.removedToolSlugs)
+      ? [
+          ...new Set(
+            raw.removedToolSlugs.filter(
+              (slug): slug is string => typeof slug === "string" && Boolean(slug.trim()),
+            ),
+          ),
+        ]
+      : [],
+    clearedDealSlugs: Array.isArray(raw?.clearedDealSlugs)
+      ? [
+          ...new Set(
+            raw.clearedDealSlugs.filter(
+              (slug): slug is string => typeof slug === "string" && Boolean(slug.trim()),
+            ),
+          ),
+        ]
+      : [],
   };
+}
+
+function applyClearedDeals(db: Database) {
+  const cleared = new Set(db.settings.clearedDealSlugs ?? []);
+  if (!cleared.size) return;
+  for (const tool of db.tools) {
+    if (!cleared.has(tool.slug)) continue;
+    tool.couponCode = "";
+    tool.dealText = "";
+    tool.couponDiscount = "";
+    tool.couponExpires = "";
+  }
 }
 
 function normalizeAd(raw: Partial<AdCampaign> & Pick<AdCampaign, "id" | "title">): AdCampaign {
@@ -592,6 +635,7 @@ function emptyDb(): Database {
   };
   if (!snap) injectSeedDrafts(db);
   ensureCoreCatalog(db);
+  applyClearedDeals(db);
   return db;
 }
 
@@ -632,6 +676,7 @@ function normalizeDb(raw: Partial<Database> | null): Database {
   };
   injectSeedDrafts(db);
   ensureCoreCatalog(db);
+  applyClearedDeals(db);
   return db;
 }
 
@@ -709,6 +754,17 @@ async function readFileDb(): Promise<Database> {
       const catalog = await store.loadCatalog();
       const analytics = await store.loadAnalytics();
       const { db } = await hydrateFromRaw(catalog.value);
+      try {
+        const cleared = await store.loadClearedDealSlugs();
+        if (cleared.length) {
+          db.settings.clearedDealSlugs = [
+            ...new Set([...(db.settings.clearedDealSlugs ?? []), ...cleared]),
+          ];
+          applyClearedDeals(db);
+        }
+      } catch {
+        /* optional */
+      }
       applyAnalytics(db, analytics.value ?? {});
       catalogVersion = catalog.version;
       analyticsVersion = analytics.version;
@@ -802,6 +858,11 @@ type WriteOptions = {
   immediate?: boolean;
   /** Set false for writes that never change public pages (clicks, submissions, admin-only data). */
   publicChange?: boolean;
+  /**
+   * When true (default for safety on mutations), always reload the catalog under the row lock
+   * instead of reusing the in-memory copy. Prevents a second write from resurrecting the first.
+   */
+  fresh?: boolean;
 };
 
 export function withDb<T>(
@@ -814,14 +875,29 @@ export function withDb<T>(
       let working = null as Database | null;
       let changed = false;
       try {
-        const { withCatalogTransaction } = await postgresStore();
-        const outcome = await withCatalogTransaction(catalogVersion, async (raw, reuseCached) => {
+        const { withCatalogTransaction, loadClearedDealSlugs } = await postgresStore();
+        // Default fresh=true: never mutate a stale in-memory catalog across concurrent admin saves.
+        const versionHint = options?.fresh === false ? catalogVersion : null;
+        // Read outside the catalog transaction (pool max=1 on Vercel — never nest clients).
+        let sideCleared: string[] = [];
+        try {
+          sideCleared = await loadClearedDealSlugs();
+        } catch {
+          /* side table optional on first boot */
+        }
+        const outcome = await withCatalogTransaction(versionHint, async (raw, reuseCached) => {
           let db: Database;
-          if (reuseCached && cached) {
+          if (reuseCached && cached && options?.fresh === false) {
             db = cached;
           } else {
             db = (await hydrateFromRaw(raw)).db;
             if (cached) applyAnalytics(db, cached);
+          }
+          if (sideCleared.length) {
+            db.settings.clearedDealSlugs = [
+              ...new Set([...(db.settings.clearedDealSlugs ?? []), ...sideCleared]),
+            ];
+            applyClearedDeals(db);
           }
           working = db;
           const before = contentSnapshot(db);
@@ -1037,7 +1113,8 @@ export async function getFeaturedTools() {
 export async function getDealTools() {
   const db = await readDb();
   return db.tools.filter(
-    (tool) => isPublished(tool) && Boolean(tool.couponCode || tool.dealText),
+    (tool) =>
+      isPublished(tool) && Boolean(tool.couponCode || tool.dealText || tool.couponDiscount),
   );
 }
 
@@ -1878,17 +1955,96 @@ export async function addCommission(input: {
   });
 }
 
-export async function updateTool(slug: string, patch: Partial<Tool>) {
-  return withDb((db) => {
+function dealFieldsCleared(patch: Partial<Tool>, tool: Tool) {
+  const nextCode =
+    "couponCode" in patch ? String(patch.couponCode ?? "").trim() : String(tool.couponCode ?? "").trim();
+  const nextDeal =
+    "dealText" in patch ? String(patch.dealText ?? "").trim() : String(tool.dealText ?? "").trim();
+  const nextDiscount =
+    "couponDiscount" in patch
+      ? String(patch.couponDiscount ?? "").trim()
+      : String(tool.couponDiscount ?? "").trim();
+  return !nextCode && !nextDeal && !nextDiscount;
+}
+
+function dealPatchNonEmpty(patch: Partial<Tool>) {
+  return Boolean(
+    String(patch.couponCode ?? "").trim() ||
+      String(patch.dealText ?? "").trim() ||
+      String(patch.couponDiscount ?? "").trim(),
+  );
+}
+
+export type ToolUpdatePatch = Partial<Tool> & {
+  /** Allow setting a coupon after it was trash-cleared (inline blur without this is ignored). */
+  restoreDeal?: boolean;
+  /** Dedicated clear path from admin trash. */
+  clearDeal?: boolean;
+};
+
+export async function updateTool(slug: string, patch: ToolUpdatePatch) {
+  const saved = await withDb((db) => {
     const tool = db.tools.find((item) => item.slug === slug);
     if (!tool) return null;
-    const { slug: _ignore, ...rest } = patch;
+    const { slug: _ignore, restoreDeal, clearDeal, ...rest } = patch;
     if (rest.officialUrl && !rest.website) rest.website = rest.officialUrl;
     if (rest.website && !rest.officialUrl) rest.officialUrl = rest.website;
     if (rest.dealText && !rest.couponDiscount) rest.couponDiscount = rest.dealText;
+
+    const cleared = new Set(db.settings.clearedDealSlugs ?? []);
+    if (clearDeal || dealFieldsCleared(rest, tool)) {
+      rest.couponCode = "";
+      rest.dealText = "";
+      rest.couponDiscount = "";
+      rest.couponExpires = "";
+      cleared.add(slug);
+      db.settings.clearedDealSlugs = [...cleared];
+      db.settings.restoredDealSlugs = (db.settings.restoredDealSlugs ?? []).filter((item) => item !== slug);
+    } else if (dealPatchNonEmpty(rest) && cleared.has(slug)) {
+      if (!restoreDeal) {
+        // Stale blur-save after trash — keep the deal cleared.
+        rest.couponCode = "";
+        rest.dealText = "";
+        rest.couponDiscount = "";
+        rest.couponExpires = "";
+      } else {
+        cleared.delete(slug);
+        db.settings.clearedDealSlugs = [...cleared];
+        db.settings.restoredDealSlugs = [
+          ...new Set([...(db.settings.restoredDealSlugs ?? []), slug]),
+        ];
+      }
+    }
+
+    const hadDeal = Boolean(tool.couponCode || tool.dealText || tool.couponDiscount);
     const next = normalizeTool({ ...tool, ...rest, slug: tool.slug, name: rest.name || tool.name });
+    if (cleared.has(slug)) {
+      next.couponCode = "";
+      next.dealText = "";
+      next.couponDiscount = "";
+      next.couponExpires = "";
+    }
     Object.assign(tool, next);
-    return tool;
+    return { tool, dealChanged: hadDeal || Boolean(next.couponCode || next.dealText || next.couponDiscount) };
+  });
+  if (saved?.dealChanged) {
+    try {
+      revalidatePath("/deals");
+    } catch {
+      /* outside request scope */
+    }
+  }
+  return saved?.tool ?? null;
+}
+
+/** Removes coupon/deal fields only — keeps the tool listing. */
+export async function clearToolDeal(slug: string) {
+  return updateTool(slug, {
+    clearDeal: true,
+    couponCode: "",
+    dealText: "",
+    couponDiscount: "",
+    couponExpires: "",
   });
 }
 
@@ -1899,7 +2055,13 @@ export async function deleteTool(slug: string) {
     db.comparisons = db.comparisons.filter(
       (item) => item.toolASlug !== slug && item.toolBSlug !== slug,
     );
-    return before !== db.tools.length;
+    if (before === db.tools.length) return false;
+    // Remember core-catalog removals so the next hydrate does not re-seed them.
+    const removed = db.settings.removedToolSlugs ?? [];
+    if (!removed.includes(slug)) {
+      db.settings.removedToolSlugs = [...removed, slug];
+    }
+    return true;
   });
 }
 

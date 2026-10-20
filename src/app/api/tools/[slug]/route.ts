@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireAdminApi } from "@/lib/admin-auth";
-import { approveTool, deleteTool, updateTool } from "@/lib/db";
-import type { Tool } from "@/lib/types";
+import { approveTool, deleteTool, updateTool, type ToolUpdatePatch } from "@/lib/db";
 
 function fail(error: unknown, fallback: string) {
   const message = error instanceof Error ? error.message : fallback;
@@ -16,7 +15,7 @@ export async function PATCH(
   if (denied) return denied;
   try {
     const { slug } = await params;
-    const patch = (await request.json()) as Partial<Tool> & { action?: string };
+    const patch = (await request.json()) as ToolUpdatePatch & { action?: string };
     const { action, ...rest } = patch;
     if (Object.keys(rest).length) {
       const saved = await updateTool(slug, rest);

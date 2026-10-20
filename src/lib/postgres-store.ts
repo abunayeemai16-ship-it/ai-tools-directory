@@ -8,6 +8,8 @@ const { Pool: PgPool } = pg;
 const CATALOG_KEY = "catalog";
 const ANALYTICS_KEY = "analytics";
 const SCHEMA_KEY = "schema";
+/** Deal clears live outside the catalog blob so a stale full-catalog write cannot resurrect coupons. */
+const CLEARED_DEALS_KEY = "cleared_deals";
 /**
  * The catalog row is ~13 MB compressed, and every SQL access decompresses all of it.
  * Public pages read small rows derived from it at write time instead: PUBLIC_KEY holds the
@@ -222,10 +224,77 @@ function publishedCount(raw: unknown) {
   return tools.filter((tool) => tool?.status !== "draft").length;
 }
 
+type JsonObject = Record<string, unknown>;
+
+function asSlugList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [
+    ...new Set(
+      value.filter((slug): slug is string => typeof slug === "string" && Boolean(slug.trim())),
+    ),
+  ];
+}
+
+async function readClearedDealSlugs(client: Runner): Promise<string[]> {
+  const res = await client.query<{ value: { slugs?: unknown } | null }>(
+    "SELECT value FROM forge_kv WHERE key = $1",
+    [CLEARED_DEALS_KEY],
+  );
+  return asSlugList(res.rows[0]?.value?.slugs);
+}
+
+async function writeClearedDealSlugs(client: Runner, slugs: string[]) {
+  await client.query(
+    `INSERT INTO forge_kv (key, value, updated_at)
+     VALUES ($1, $2::jsonb, clock_timestamp())
+     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = clock_timestamp()`,
+    [CLEARED_DEALS_KEY, JSON.stringify({ slugs })],
+  );
+}
+
+/**
+ * Strip coupon/deal fields for tombstoned slugs so a stale full-catalog write
+ * (second admin save overwriting the first) cannot revive cleared coupons.
+ */
+function applyClearedDealsToPayload(payload: Record<string, unknown>, cleared: string[]) {
+  const clearedSet = new Set(cleared);
+  const tools = Array.isArray(payload.tools) ? (payload.tools as JsonObject[]) : [];
+  if (clearedSet.size) {
+    payload.tools = tools.map((tool) => {
+      const slug = typeof tool?.slug === "string" ? tool.slug : "";
+      if (!slug || !clearedSet.has(slug)) return tool;
+      return {
+        ...tool,
+        couponCode: "",
+        dealText: "",
+        couponDiscount: "",
+        couponExpires: "",
+      };
+    });
+  }
+  const settings = { ...((payload.settings as JsonObject) ?? {}) };
+  settings.clearedDealSlugs = cleared;
+  delete settings.restoredDealSlugs;
+  payload.settings = settings;
+  return payload;
+}
+
+export async function loadClearedDealSlugs(): Promise<string[]> {
+  return withClient((client) => readClearedDealSlugs(client));
+}
+
 /** Returns the new catalog version, or null when the write was skipped. */
 async function upsertCatalog(client: Runner, value: unknown) {
-  const payload = stripEvents(value);
-  const incoming = publishedCount(payload);
+  let payload = stripEvents(value) as Record<string, unknown>;
+  const settings = (payload.settings ?? {}) as JsonObject;
+  const prior = await readClearedDealSlugs(client);
+  const incoming = asSlugList(settings.clearedDealSlugs);
+  const restored = asSlugList(settings.restoredDealSlugs);
+  // Union keeps tombstones from prior writes; restoredDealSlugs is the only way to drop one.
+  const cleared = [...new Set([...prior, ...incoming])].filter((slug) => !restored.includes(slug));
+  await writeClearedDealSlugs(client, cleared);
+  payload = applyClearedDealsToPayload(payload, cleared);
+  const publishedIncoming = publishedCount(payload);
   const current = await client.query<{ published: number | null }>(
     `SELECT COALESCE(
        (SELECT jsonb_array_length(value->'data'->'tools') FROM forge_kv WHERE key = $2),
@@ -235,10 +304,10 @@ async function upsertCatalog(client: Runner, value: unknown) {
     [CATALOG_KEY, PUBLIC_KEY],
   );
   const existing = current.rows[0]?.published ?? 0;
-  if (existing > incoming) {
+  if (existing > publishedIncoming) {
     console.warn("[forge] skip catalog write that would drop published tools", {
       existing,
-      incoming,
+      incoming: publishedIncoming,
     });
     return null;
   }
@@ -252,8 +321,6 @@ async function upsertCatalog(client: Runner, value: unknown) {
   await syncDerivedRows(client, payload);
   return saved.rows[0]?.version ?? null;
 }
-
-type JsonObject = Record<string, unknown>;
 
 function pick(source: JsonObject, fields: readonly string[]) {
   const out: JsonObject = {};

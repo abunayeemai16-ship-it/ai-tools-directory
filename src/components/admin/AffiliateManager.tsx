@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Megaphone, Plus, Search, Trash2, X } from "lucide-react";
 import Link from "next/link";
 import { categoryLabel, hasActiveAffiliate } from "@/lib/categories";
@@ -8,6 +8,18 @@ import type { Commission, DirectoryCategory, PricingModel, PublishStatus, ToolSt
 import { formatCurrency, formatNumber } from "@/lib/utils";
 import { PricingBadge } from "@/components/tools/PricingBadge";
 import { StarRating } from "@/components/tools/StarRating";
+
+const EMPTY_DEAL: {
+  couponCode: string;
+  dealText: string;
+  couponDiscount: string;
+  couponExpires: string;
+} = {
+  couponCode: "",
+  dealText: "",
+  couponDiscount: "",
+  couponExpires: "",
+};
 
 type Filter = "all" | "active" | "pending";
 
@@ -87,12 +99,37 @@ export function AffiliateManager({ initial }: { initial?: Payload }) {
   const [status, setStatus] = useState("");
   const [editing, setEditing] = useState<{ mode: "create" | "edit"; slug?: string; draft: Draft } | null>(null);
   const [busy, setBusy] = useState(false);
+  /** Blocks blur-saves while a trash clear is in flight (stale inputs were re-POSTing old coupons). */
+  const suppressInlineSave = useRef(false);
+  /** Slugs whose deals were cleared in this session — ignore stale server echoes until they match. */
+  const clearedDealSlugs = useRef(new Set<string>());
+  const toolsRef = useRef(tools);
+  toolsRef.current = tools;
 
   const load = useCallback(async () => {
     const res = await fetch("/api/affiliates", { cache: "no-store" });
     if (!res.ok) return;
     const data = (await res.json()) as Payload;
-    setTools(data.tools);
+    const resurrected: string[] = [];
+    setTools(
+      data.tools.map((tool) => {
+        if (!clearedDealSlugs.current.has(tool.slug)) return tool;
+        if (!tool.couponCode && !tool.dealText && !tool.couponDiscount) {
+          clearedDealSlugs.current.delete(tool.slug);
+          return tool;
+        }
+        // Server still has the old coupon (racing blur-save) — keep UI cleared and re-PATCH.
+        resurrected.push(tool.slug);
+        return { ...tool, ...EMPTY_DEAL };
+      }),
+    );
+    for (const slug of resurrected) {
+      void fetch(`/api/tools/${slug}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...EMPTY_DEAL, clearDeal: true }),
+      });
+    }
     setCategories(data.categories ?? []);
     setCommissions(data.commissions);
     setEpc(String(data.settings.epc));
@@ -150,9 +187,42 @@ export function AffiliateManager({ initial }: { initial?: Payload }) {
   }
 
   async function saveInline(tool: ToolStats, patch: Record<string, string>) {
-    const body: Record<string, string | number> = { ...patch };
+    if (suppressInlineSave.current) return;
+    const latest = toolsRef.current.find((item) => item.slug === tool.slug) ?? tool;
+    const body: Record<string, string | number | boolean> = { ...patch };
     if (patch.rating !== undefined) body.rating = Number(patch.rating);
     if (patch.reviewCount !== undefined) body.reviewCount = Number(patch.reviewCount);
+    // Blanking any deal field clears the whole package so /deals cannot resurrect a twin field.
+    const dealKeys = ["couponCode", "dealText", "couponDiscount", "couponExpires"] as const;
+    const touchingDeal = dealKeys.some((key) => key in patch);
+    if (touchingDeal) {
+      const incomingCode = String(
+        "couponCode" in patch ? patch.couponCode : latest.couponCode ?? "",
+      ).trim();
+      const incomingDeal = String(
+        "dealText" in patch
+          ? patch.dealText
+          : "couponDiscount" in patch
+            ? patch.couponDiscount
+            : latest.dealText || latest.couponDiscount || "",
+      ).trim();
+      // After trash-clear, ignore blur that would resurrect the old coupon unless the user typed again.
+      if (clearedDealSlugs.current.has(tool.slug)) {
+        if (!incomingCode && !incomingDeal) {
+          Object.assign(body, EMPTY_DEAL);
+          body.clearDeal = true;
+        } else {
+          // User is intentionally adding a new deal.
+          clearedDealSlugs.current.delete(tool.slug);
+          body.restoreDeal = true;
+        }
+      } else if (!incomingCode && !incomingDeal) {
+        Object.assign(body, EMPTY_DEAL);
+        body.clearDeal = true;
+      } else if (incomingCode || incomingDeal) {
+        body.restoreDeal = true;
+      }
+    }
     await fetch(`/api/tools/${tool.slug}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -161,10 +231,59 @@ export function AffiliateManager({ initial }: { initial?: Payload }) {
     void load();
   }
 
-  async function removeTool(toolSlug: string) {
-    if (!window.confirm("Delete this tool from the directory? This cannot be undone.")) return;
-    await fetch(`/api/tools/${toolSlug}`, { method: "DELETE" });
-    void load();
+  function hasDeal(tool: ToolStats) {
+    return Boolean(tool.couponCode || tool.dealText || tool.couponDiscount);
+  }
+
+  function patchLocalDeal(slug: string, deal: Partial<typeof EMPTY_DEAL>) {
+    setTools((prev) =>
+      prev.map((item) => (item.slug === slug ? { ...item, ...deal } : item)),
+    );
+  }
+
+  function releaseInlineSaveSoon() {
+    window.setTimeout(() => {
+      suppressInlineSave.current = false;
+    }, 300);
+  }
+
+  /** Trash clears the deal/coupon when one is set; otherwise removes the tool listing. */
+  async function removeDealOrTool(tool: ToolStats) {
+    if (hasDeal(tool)) {
+      if (!window.confirm(`Remove the deal & coupon from ${tool.name}? The tool listing stays.`)) {
+        releaseInlineSaveSoon();
+        return;
+      }
+      suppressInlineSave.current = true;
+      clearedDealSlugs.current.add(tool.slug);
+      patchLocalDeal(tool.slug, EMPTY_DEAL);
+      try {
+        const res = await fetch(`/api/tools/${tool.slug}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...EMPTY_DEAL, clearDeal: true }),
+        });
+        setStatus(res.ok ? `Cleared deal on ${tool.name}` : "Could not clear deal");
+        if (!res.ok) clearedDealSlugs.current.delete(tool.slug);
+        await load();
+      } finally {
+        releaseInlineSaveSoon();
+      }
+      return;
+    }
+    if (!window.confirm("Delete this tool from the directory? This cannot be undone.")) {
+      releaseInlineSaveSoon();
+      return;
+    }
+    suppressInlineSave.current = true;
+    try {
+      const res = await fetch(`/api/tools/${tool.slug}`, { method: "DELETE" });
+      setStatus(res.ok ? `Deleted ${tool.name}` : "Could not delete tool");
+      if (res.ok) setTools((prev) => prev.filter((item) => item.slug !== tool.slug));
+      await load();
+    } finally {
+      releaseInlineSaveSoon();
+    }
   }
 
   async function saveModal(event: React.FormEvent) {
@@ -413,14 +532,25 @@ export function AffiliateManager({ initial }: { initial?: Payload }) {
                       className="mt-1 w-44 rounded-lg border border-line bg-ink px-2 py-1 text-xs"
                     />
                     <input
-                      defaultValue={tool.couponCode ?? ""}
+                      value={tool.couponCode ?? ""}
                       placeholder="FORGE20"
-                      onBlur={(event) => void saveInline(tool, { couponCode: event.target.value })}
+                      onChange={(event) =>
+                        patchLocalDeal(tool.slug, { couponCode: event.target.value })
+                      }
+                      onBlur={(event) =>
+                        void saveInline(tool, { couponCode: event.target.value })
+                      }
                       className="mt-1 w-28 rounded-lg border border-line bg-ink px-2 py-1 font-mono text-xs text-accent"
                     />
                     <input
-                      defaultValue={tool.dealText || tool.couponDiscount || ""}
+                      value={tool.dealText || tool.couponDiscount || ""}
                       placeholder="20% OFF with code FORGE20"
+                      onChange={(event) =>
+                        patchLocalDeal(tool.slug, {
+                          dealText: event.target.value,
+                          couponDiscount: event.target.value,
+                        })
+                      }
                       onBlur={(event) =>
                         void saveInline(tool, {
                           dealText: event.target.value,
@@ -450,9 +580,16 @@ export function AffiliateManager({ initial }: { initial?: Payload }) {
                       </button>
                       <button
                         type="button"
-                        onClick={() => void removeTool(tool.slug)}
+                        // Prevent input blur-save from firing with the old coupon before trash runs.
+                        onMouseDown={() => {
+                          suppressInlineSave.current = true;
+                        }}
+                        onClick={() => void removeDealOrTool(tool)}
                         className="rounded-full p-2 text-muted hover:bg-rose/15 hover:text-rose"
-                        aria-label={`Delete ${tool.name}`}
+                        aria-label={
+                          hasDeal(tool) ? `Remove deal from ${tool.name}` : `Delete ${tool.name}`
+                        }
+                        title={hasDeal(tool) ? "Remove deal & coupon" : "Delete tool"}
                       >
                         <Trash2 className="h-4 w-4" />
                       </button>

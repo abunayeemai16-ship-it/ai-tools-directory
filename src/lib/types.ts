@@ -308,6 +308,12 @@ export type AppSettings = {
   sponsoredOfferPrice: number;
   sponsoredOfferStart: string;
   sponsoredOfferEnd: string;
+  /** Core-catalog slugs removed in admin; ensureCoreCatalog must not resurrect them. */
+  removedToolSlugs: string[];
+  /** Tool slugs whose deals/coupons were cleared; cannot be revived by a stale catalog write. */
+  clearedDealSlugs: string[];
+  /** One-shot: remove these from clearedDealSlugs on the next catalog upsert (intentional restore). */
+  restoredDealSlugs?: string[];
 };
 
 export type Database = {

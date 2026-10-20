@@ -31,6 +31,11 @@ export const metadata: Metadata = {
     description: DEFAULT_HOME_DESCRIPTION,
     type: "website",
   },
+  verification: {
+    other: {
+      "impact-site-verification": "1a781a5a-c992-4c28-89f3-83d8e0a48ba9",
+    },
+  },
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
