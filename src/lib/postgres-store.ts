@@ -283,6 +283,95 @@ export async function loadClearedDealSlugs(): Promise<string[]> {
   return withClient((client) => readClearedDealSlugs(client));
 }
 
+const EMPTY_DEAL_JSON = JSON.stringify({
+  couponCode: "",
+  dealText: "",
+  couponDiscount: "",
+  couponExpires: "",
+});
+
+/**
+ * Clears coupon/deal fields for one tool without rewriting the full catalog from Node memory.
+ * Stale concurrent admin saves cannot resurrect the coupon because the slug is tombstoned first.
+ */
+export async function clearToolDealFields(slug: string): Promise<boolean> {
+  return withClient(async (client) => {
+    try {
+      await client.query("BEGIN");
+      for (const guard of TRANSACTION_GUARDS) await client.query(guard);
+      await client.query("SELECT 1 FROM forge_kv WHERE key = $1 FOR UPDATE", [CATALOG_KEY]);
+
+      const prior = await readClearedDealSlugs(client);
+      const cleared = prior.includes(slug) ? prior : [...prior, slug];
+      await writeClearedDealSlugs(client, cleared);
+
+      const patched = await client.query<{ found: boolean }>(
+        `WITH tools AS (
+           SELECT COALESCE(value->'tools', '[]'::jsonb) AS arr FROM forge_kv WHERE key = $1
+         ),
+         next AS (
+           SELECT jsonb_agg(
+             CASE WHEN elem->>'slug' = $2 THEN elem || $3::jsonb ELSE elem END
+             ORDER BY ordinality
+           ) AS arr
+           FROM tools, jsonb_array_elements(tools.arr) WITH ORDINALITY AS t(elem, ordinality)
+         )
+         UPDATE forge_kv SET
+           value = jsonb_set(value, '{tools}', (SELECT arr FROM next)),
+           updated_at = clock_timestamp()
+         WHERE key = $1
+           AND EXISTS (
+             SELECT 1 FROM tools, jsonb_array_elements(tools.arr) elem WHERE elem->>'slug' = $2
+           )
+         RETURNING true AS found`,
+        [CATALOG_KEY, slug, EMPTY_DEAL_JSON],
+      );
+      if (!patched.rows[0]?.found) {
+        await client.query("ROLLBACK");
+        return false;
+      }
+
+      await client.query(
+        `UPDATE forge_tools
+         SET data = data || $2::jsonb,
+             hash = md5(slug || clock_timestamp()::text)
+         WHERE slug = $1`,
+        [slug, EMPTY_DEAL_JSON],
+      );
+
+      // Keep the public projection in sync so /deals does not wait on a full catalog rewrite.
+      await client.query(
+        `UPDATE forge_kv SET
+           value = jsonb_set(
+             value,
+             '{data,tools}',
+             COALESCE((
+               SELECT jsonb_agg(
+                 CASE WHEN elem->>'slug' = $2 THEN elem || $3::jsonb ELSE elem END
+                 ORDER BY ordinality
+               )
+               FROM jsonb_array_elements(COALESCE(value->'data'->'tools', '[]'::jsonb))
+                    WITH ORDINALITY AS t(elem, ordinality)
+             ), '[]'::jsonb)
+           ),
+           updated_at = clock_timestamp()
+         WHERE key = $1`,
+        [PUBLIC_KEY, slug, EMPTY_DEAL_JSON],
+      );
+
+      await client.query("COMMIT");
+      return true;
+    } catch (error) {
+      try {
+        await client.query("ROLLBACK");
+      } catch {
+        /* ignore */
+      }
+      throw error;
+    }
+  });
+}
+
 /** Returns the new catalog version, or null when the write was skipped. */
 async function upsertCatalog(client: Runner, value: unknown) {
   let payload = stripEvents(value) as Record<string, unknown>;

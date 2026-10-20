@@ -77,9 +77,6 @@ export const tools: Array<Omit<Tool, "status" | "createdAt" | "officialUrl"> & {
     metaDescription:
       "Jasper AI review covering Brand Voice, campaign workflows, pricing, and who should skip it. See ratings, pros and cons, and current deals.",
     conversionNote: "Pro plan converts best from comparison pages.",
-    couponCode: "FORGE20",
-    couponDiscount: "20% off first 3 months",
-    couponExpires: "Nov 30, 2026",
   },
   {
     slug: "copy-ai",
@@ -156,9 +153,6 @@ export const tools: Array<Omit<Tool, "status" | "createdAt" | "officialUrl"> & {
     metaDescription:
       "Copy.ai review for GTM teams. See workflow features, free plan limits, pricing, and how it compares to Jasper AI.",
     conversionNote: "Free-to-paid upgrades spike after workflow demos.",
-    couponCode: "COPY15",
-    couponDiscount: "15% off Starter annually",
-    couponExpires: "Dec 15, 2026",
   },
   {
     slug: "midjourney",
@@ -237,9 +231,6 @@ export const tools: Array<Omit<Tool, "status" | "createdAt" | "officialUrl"> & {
     metaDescription:
       "Midjourney review of image quality, web vs Discord, pricing plans, and whether it beats Leonardo or DALL·E for professional work.",
     conversionNote: "Standard plan is the default convert from reviews.",
-    couponCode: "MJBOOST",
-    couponDiscount: "Extra fast hours on annual",
-    couponExpires: "Oct 31, 2026",
   },
   {
     slug: "leonardo-ai",
@@ -394,9 +385,6 @@ export const tools: Array<Omit<Tool, "status" | "createdAt" | "officialUrl"> & {
     metaDescription:
       "Runway ML review of Gen video models, credit costs, editing tools, and who should choose Synthesia instead.",
     conversionNote: "Pro plan converts from agency landing traffic.",
-    couponCode: "RUNWAY10",
-    couponDiscount: "10% extra credits",
-    couponExpires: "Nov 12, 2026",
   },
   {
     slug: "synthesia",
@@ -474,9 +462,6 @@ export const tools: Array<Omit<Tool, "status" | "createdAt" | "officialUrl"> & {
     metaDescription:
       "Synthesia review of AI avatar videos for training and explainers, including languages, pricing, and Runway comparison.",
     conversionNote: "Creator plan wins from L&D comparison traffic.",
-    couponCode: "SYNTH25",
-    couponDiscount: "25% off first year Creator",
-    couponExpires: "Dec 1, 2026",
   },
   {
     slug: "github-copilot",
@@ -632,9 +617,6 @@ export const tools: Array<Omit<Tool, "status" | "createdAt" | "officialUrl"> & {
     metaDescription:
       "Cursor IDE review of agent coding, pricing, privacy, and whether it should replace GitHub Copilot on your team.",
     conversionNote: "Highest EPC of all coding tools this month.",
-    couponCode: "CURSORPRO",
-    couponDiscount: "1 month Pro extra on annual",
-    couponExpires: "Nov 20, 2026",
   },
   {
     slug: "surfer-seo",
@@ -712,9 +694,6 @@ export const tools: Array<Omit<Tool, "status" | "createdAt" | "officialUrl"> & {
     metaDescription:
       "Surfer SEO review of Content Editor, AI writing, plans, and whether it is worth it versus Clearscope or Frase.",
     conversionNote: "Scale plan converts from affiliate-site reviews.",
-    couponCode: "SURFER20",
-    couponDiscount: "20% off annual",
-    couponExpires: "Dec 31, 2026",
   },
   {
     slug: "adcreative-ai",
@@ -870,9 +849,6 @@ export const tools: Array<Omit<Tool, "status" | "createdAt" | "officialUrl"> & {
     metaDescription:
       "ElevenLabs review of TTS quality, cloning, dubbing, conversational AI, pricing, and how it compares to Descript.",
     conversionNote: "Creator plan is the volume convert; Pro from studios.",
-    couponCode: "VOICE30",
-    couponDiscount: "30% off first month Creator",
-    couponExpires: "Nov 8, 2026",
   },
   {
     slug: "descript",
@@ -950,9 +926,6 @@ export const tools: Array<Omit<Tool, "status" | "createdAt" | "officialUrl"> & {
     metaDescription:
       "Descript review of transcript editing, Studio Sound, Overdub, plans, and when to use ElevenLabs instead.",
     conversionNote: "Hobbyist converts from podcast-niche posts.",
-    couponCode: "DESCRIPTEDIT",
-    couponDiscount: "20% off annual Creator",
-    couponExpires: "Dec 10, 2026",
   },
 ];
 

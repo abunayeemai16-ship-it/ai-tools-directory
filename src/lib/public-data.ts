@@ -220,12 +220,27 @@ export async function getComparisonPageData(slug: string) {
   return pair ? { comparison, ...pair } : null;
 }
 
-export async function getDealsData() {
-  const catalog = await publicCatalog();
+/**
+ * Deals change when admin clears coupons; keep TTL short so CDN s-maxage cannot
+ * ignore revalidateTag the way the 24h directory catalog cache can.
+ */
+async function publicDeals() {
+  "use cache";
+  cacheTag(PUBLIC_CACHE_TAG);
+  const { db, live } = await loadPublicDb();
+  if (live) cacheLife({ stale: 60, revalidate: 60, expire: 600 });
+  else cacheLife("minutes");
+  const tools = db.tools.filter(isPublished);
   return {
-    deals: catalog.tools.filter((tool) => Boolean(tool.couponCode || tool.dealText)),
-    categories: catalog.categories,
+    deals: tools
+      .filter((tool) => Boolean(tool.couponCode || tool.dealText || tool.couponDiscount))
+      .map(toDealCard),
+    categories: [...db.categories].sort((a, b) => a.sortOrder - b.sortOrder),
   };
+}
+
+export async function getDealsData() {
+  return publicDeals();
 }
 
 export async function getPublicCategories() {

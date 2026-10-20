@@ -804,6 +804,22 @@ async function readFileDb(): Promise<Database> {
   }
 }
 
+/** Re-apply deal tombstones onto the live memory copy (cheap one-row read). */
+async function syncClearedDealsInto(db: Database) {
+  if (!usesPostgres()) return;
+  try {
+    const { loadClearedDealSlugs } = await postgresStore();
+    const cleared = await loadClearedDealSlugs();
+    if (!cleared.length) return;
+    db.settings.clearedDealSlugs = [
+      ...new Set([...(db.settings.clearedDealSlugs ?? []), ...cleared]),
+    ];
+    applyClearedDeals(db);
+  } catch {
+    /* side table optional on first boot */
+  }
+}
+
 async function ensureMemory() {
   if (process.env.VERCEL && !usesPostgres() && !vercelPersistWarned) {
     vercelPersistWarned = true;
@@ -816,6 +832,8 @@ async function ensureMemory() {
   } else if (usesPostgres() && performance.now() - catalogCheckedAt > VERSION_CHECK_MS) {
     await refreshCatalogIfChanged();
   }
+  // Always strip tombstoned deals so admin cannot keep showing coupons after /deals cleared them.
+  if (memory) await syncClearedDealsInto(memory);
   const dirty = await applyRuntimeDefaults(memory);
   if (dirty && !process.env.VERCEL) await persistCatalog();
   return memory;
@@ -826,10 +844,14 @@ async function refreshCatalogIfChanged() {
   try {
     const store = await postgresStore();
     const versions = await store.readStoreVersions();
-    if (versions.catalog === catalogVersion) return;
+    if (versions.catalog === catalogVersion) {
+      if (memory) await syncClearedDealsInto(memory);
+      return;
+    }
     const catalog = await store.loadCatalog();
     const { db } = await hydrateFromRaw(catalog.value);
     if (memory) applyAnalytics(db, memory);
+    await syncClearedDealsInto(db);
     memory = db;
     catalogVersion = catalog.version;
     lastCatalogSnap = "__postgres__";
@@ -1008,10 +1030,22 @@ export async function loadPublicDb(): Promise<{ db: Database; live: boolean }> {
   if (!usesPostgres()) return { db: await ensureMemory(), live: true };
   if (isBuildPhase()) return { db: emptyDb(), live: false };
   try {
-    const { loadPublicCatalog } = await postgresStore();
+    const { loadPublicCatalog, loadClearedDealSlugs } = await postgresStore();
     const loaded = await loadPublicCatalog();
     if (!loaded.value) return { db: emptyDb(), live: false };
-    return { db: normalizeDb(loaded.value), live: true };
+    const db = normalizeDb(loaded.value);
+    try {
+      const cleared = await loadClearedDealSlugs();
+      if (cleared.length) {
+        db.settings.clearedDealSlugs = [
+          ...new Set([...(db.settings.clearedDealSlugs ?? []), ...cleared]),
+        ];
+        applyClearedDeals(db);
+      }
+    } catch {
+      /* side table optional */
+    }
+    return { db, live: true };
   } catch (error) {
     console.error("[forge] Postgres public catalog load failed, using bundled snapshot", error);
     return { db: emptyDb(), live: false };
@@ -2039,6 +2073,25 @@ export async function updateTool(slug: string, patch: ToolUpdatePatch) {
 
 /** Removes coupon/deal fields only — keeps the tool listing. */
 export async function clearToolDeal(slug: string) {
+  if (usesPostgres()) {
+    try {
+      const store = await postgresStore();
+      const ok = await store.clearToolDealFields(slug);
+      // Drop in-memory catalog so the next admin read cannot resurrect the coupon.
+      memory = null;
+      catalogVersion = null;
+      revalidatePublicPages();
+      try {
+        revalidatePath("/deals");
+      } catch {
+        /* outside request scope */
+      }
+      if (!ok) return null;
+      return (await getToolBySlug(slug, { includeDrafts: true })) ?? null;
+    } catch (error) {
+      console.error("[forge] surgical clearToolDeal failed, falling back", error);
+    }
+  }
   return updateTool(slug, {
     clearDeal: true,
     couponCode: "",

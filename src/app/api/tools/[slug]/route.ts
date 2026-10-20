@@ -1,6 +1,12 @@
 import { NextResponse } from "next/server";
 import { requireAdminApi } from "@/lib/admin-auth";
-import { approveTool, deleteTool, updateTool, type ToolUpdatePatch } from "@/lib/db";
+import {
+  approveTool,
+  clearToolDeal,
+  deleteTool,
+  updateTool,
+  type ToolUpdatePatch,
+} from "@/lib/db";
 
 function fail(error: unknown, fallback: string) {
   const message = error instanceof Error ? error.message : fallback;
@@ -17,6 +23,11 @@ export async function PATCH(
     const { slug } = await params;
     const patch = (await request.json()) as ToolUpdatePatch & { action?: string };
     const { action, ...rest } = patch;
+    if (rest.clearDeal) {
+      const saved = await clearToolDeal(slug);
+      if (!saved) return NextResponse.json({ error: "Not found" }, { status: 404 });
+      return NextResponse.json(saved);
+    }
     if (Object.keys(rest).length) {
       const saved = await updateTool(slug, rest);
       if (!saved) return NextResponse.json({ error: "Not found" }, { status: 404 });
