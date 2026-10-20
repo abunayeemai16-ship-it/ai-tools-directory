@@ -11,21 +11,26 @@ import {
   loadTrafficSummary,
 } from "@/lib/db";
 import { siteOrigin } from "@/lib/site";
-import type { Tool } from "@/lib/types";
+import type { DirectoryCard, Tool } from "@/lib/types";
 
 /*
- * Every public page reads through this module. The two "use cache" loaders below are the
+ * Every public page reads through this module. The "use cache" loaders below are the
  * only places that touch Supabase; pages built from them are prerendered and served from
- * Vercel's cache, regenerating at most hourly or when directory content changes
- * (PUBLIC_CACHE_TAG is revalidated by db.ts writes).
+ * Vercel's CDN. Cache Components replaces `export const revalidate` (which errors here):
+ * `cacheLife("days")` revalidates in the background after 24h, or sooner when
+ * PUBLIC_CACHE_TAG is invalidated by catalog writes in db.ts.
  */
+
+function isBuildPhase() {
+  return process.env.NEXT_PHASE === "phase-production-build";
+}
 
 async function publicCatalog() {
   "use cache";
   cacheTag(PUBLIC_CACHE_TAG);
   const { db, live } = await loadPublicDb();
-  // A snapshot fallback must not stay cached for an hour.
-  if (live) cacheLife("hours");
+  // Build + live Postgres: 24h CDN TTL. Runtime DB-down empty fallback stays short-lived.
+  if (live || isBuildPhase()) cacheLife("days");
   else cacheLife("minutes");
   const tools = db.tools.filter(isPublished);
   const published = new Set(tools.map((tool) => tool.slug));
@@ -45,11 +50,11 @@ async function publicCatalog() {
   };
 }
 
-async function publicTool(card: Tool) {
+async function publicTool(card: DirectoryCard) {
   "use cache";
   cacheTag(PUBLIC_CACHE_TAG);
   const { tool, live } = await loadPublicTool(card);
-  if (live) cacheLife("hours");
+  if (live || isBuildPhase()) cacheLife("days");
   else cacheLife("minutes");
   return tool ?? null;
 }
@@ -58,43 +63,31 @@ async function trafficSummary() {
   "use cache";
   cacheTag(PUBLIC_CACHE_TAG);
   const summary = await loadTrafficSummary();
-  if (summary.live) cacheLife("hours");
+  // Advertise-page stats; weekly is enough and avoids daily forge_events scans.
+  if (summary.live || isBuildPhase()) cacheLife("weeks");
   else cacheLife("minutes");
   return summary;
 }
 
 /** Only the fields cards render; long review text and affiliate data stay on the server. */
-function toCard(tool: Tool): Tool {
+function toCard(tool: Tool): DirectoryCard {
   return {
     slug: tool.slug,
     name: tool.name,
     website: "",
     officialUrl: tool.officialUrl || tool.website,
-    affiliateUrl: "",
     shortPitch: tool.shortPitch,
-    overview: "",
+    bestFor: tool.bestFor,
     category: tool.category,
     pricingModel: tool.pricingModel,
     rating: tool.rating,
     reviewCount: tool.reviewCount,
     featured: tool.featured,
     brandColor: tool.brandColor,
-    founded: "",
-    bestFor: tool.bestFor,
-    features: [],
-    pros: [],
-    cons: [],
-    pricingTiers: [],
-    faqs: [],
-    seoTitle: "",
-    metaDescription: "",
-    conversionNote: "",
-    status: tool.status,
-    createdAt: "",
   };
 }
 
-function toDealCard(tool: Tool): Tool {
+function toDealCard(tool: Tool): DirectoryCard {
   return {
     ...toCard(tool),
     dealText: tool.dealText,
@@ -109,7 +102,7 @@ type Catalog = Awaited<ReturnType<typeof publicCatalog>>;
 function comparisonPair(catalog: Catalog, toolASlug: string, toolBSlug: string) {
   const toolA = catalog.tools.find((tool) => tool.slug === toolASlug);
   const toolB = catalog.tools.find((tool) => tool.slug === toolBSlug);
-  return toolA && toolB ? { toolA: toCard(toolA), toolB: toCard(toolB) } : null;
+  return toolA && toolB ? { toolA, toolB } : null;
 }
 
 export async function getHomeSeo() {
@@ -119,15 +112,15 @@ export async function getHomeSeo() {
 export async function getHomeData() {
   const catalog = await publicCatalog();
   return {
-    tools: catalog.tools.map(toCard),
-    featured: catalog.tools.filter((tool) => tool.featured).slice(0, 6).map(toCard),
+    tools: catalog.tools,
+    featured: catalog.tools.filter((tool) => tool.featured).slice(0, 6),
     categories: catalog.categories,
     ads: catalog.ads,
   };
 }
 
 /** Slugs prerendered at build time; every other review renders on first visit, then stays cached. */
-export async function getPopularToolSlugs(limit = 30) {
+export async function getPopularToolSlugs(limit = 120) {
   const { tools } = await publicCatalog();
   return [...tools]
     .sort(
@@ -151,8 +144,7 @@ export async function getToolPageData(slug: string) {
     sidebarTool: card,
     related: catalog.tools
       .filter((item) => item.slug !== slug && item.category === card.category)
-      .slice(0, 3)
-      .map(toCard),
+      .slice(0, 3),
     categories: catalog.categories,
     promoAds: catalog.ads.filter((ad) => ad.placement === "review_sidebar"),
   };

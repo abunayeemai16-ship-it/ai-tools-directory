@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { after, NextResponse } from "next/server";
 import { resolveCountry } from "@/lib/country";
 import { upsertHeartbeat } from "@/lib/db";
 
@@ -15,10 +15,12 @@ export async function POST(request: Request) {
   }
 
   const country = resolveCountry(request, body);
-  await upsertHeartbeat({
-    sessionId: body.sessionId,
-    country,
-  });
+  const sessionId = body.sessionId;
+  after(() =>
+    upsertHeartbeat({ sessionId, country }).catch((error) =>
+      console.error("[forge] heartbeat write failed", error),
+    ),
+  );
 
-  return NextResponse.json({ ok: true, country });
+  return new NextResponse(null, { status: 204 });
 }

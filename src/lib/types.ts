@@ -23,6 +23,26 @@ export type FAQ = {
   answer: string;
 };
 
+/** Card fields shipped to the homepage / deals grid — keeps Fast Origin Transfer small. */
+export type DirectoryCard = {
+  slug: string;
+  name: string;
+  officialUrl: string;
+  website: string;
+  shortPitch: string;
+  bestFor: string;
+  category: Category;
+  pricingModel: PricingModel;
+  rating: number;
+  reviewCount: number;
+  featured: boolean;
+  brandColor: string;
+  dealText?: string;
+  couponCode?: string;
+  couponDiscount?: string;
+  couponExpires?: string;
+};
+
 export type Tool = {
   slug: string;
   name: string;

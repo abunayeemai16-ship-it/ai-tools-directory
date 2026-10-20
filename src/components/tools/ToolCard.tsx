@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { BadgeCheck, Sparkles } from "lucide-react";
 import { categoryLabel } from "@/lib/categories";
-import type { DirectoryCategory, Tool } from "@/lib/types";
+import type { DirectoryCard, DirectoryCategory } from "@/lib/types";
 import { formatNumber, starsLabel } from "@/lib/utils";
 import { AffiliateButton } from "@/components/tools/AffiliateButton";
 import { PricingBadge } from "@/components/tools/PricingBadge";
@@ -16,7 +16,7 @@ export function ToolCard({
   spotlightLabel = "Partner Spotlight",
   eager = false,
 }: {
-  tool: Tool;
+  tool: DirectoryCard;
   categories?: DirectoryCategory[];
   spotlight?: boolean;
   spotlightLabel?: string;

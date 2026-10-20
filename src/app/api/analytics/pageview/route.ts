@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { after, NextResponse } from "next/server";
 import { resolveCountry } from "@/lib/country";
 import { recordPageview } from "@/lib/db";
 
@@ -16,11 +16,14 @@ export async function POST(request: Request) {
   }
 
   const country = resolveCountry(request, body);
-  await recordPageview({
-    sessionId: body.sessionId,
-    path: body.path,
-    country,
-  });
+  const sessionId = body.sessionId;
+  const path = body.path;
+  // Return immediately so the visit never waits on Postgres; the write runs after the response.
+  after(() =>
+    recordPageview({ sessionId, path, country }).catch((error) =>
+      console.error("[forge] pageview write failed", error),
+    ),
+  );
 
-  return NextResponse.json({ ok: true, country });
+  return new NextResponse(null, { status: 204 });
 }

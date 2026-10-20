@@ -4,6 +4,14 @@ const nextConfig: NextConfig = {
   /* config options here */
   cacheComponents: true,
   partialPrefetching: true,
+  // Directory content rarely changes; keep the CDN copy for a day between tag invalidations.
+  cacheLife: {
+    days: {
+      stale: 300,
+      revalidate: 86_400,
+      expire: 604_800,
+    },
+  },
   images: {
     formats: ["image/avif", "image/webp"],
     qualities: [75],

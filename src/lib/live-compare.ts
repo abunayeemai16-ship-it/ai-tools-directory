@@ -5,7 +5,7 @@ import {
   researchComparisonOnWeb,
   type WebResearchedComparison,
 } from "@/lib/gemini";
-import type { ComparisonRow, Tool } from "@/lib/types";
+import type { ComparisonRow } from "@/lib/types";
 
 const KIND = "live_compare";
 const RATE_KIND = "compare_rate";
@@ -245,7 +245,7 @@ export async function deleteLiveComparison(key: string) {
   memory.delete(`${KIND}:${key}`);
 }
 
-type DirectoryTool = Pick<Tool, "slug" | "name">;
+type DirectoryTool = { slug: string; name: string };
 
 /** Directory tools matching each side of a record, by the researched or the typed name. */
 export function directoryMatches(record: LiveComparisonRecord, tools: DirectoryTool[]) {

@@ -3,7 +3,7 @@
 import { Check, Copy, Ticket } from "lucide-react";
 import { useState } from "react";
 import { categoryLabel } from "@/lib/categories";
-import type { DirectoryCategory, Tool } from "@/lib/types";
+import type { DirectoryCard, DirectoryCategory } from "@/lib/types";
 import { ToolLogo } from "@/components/tools/ToolLogo";
 import { PricingBadge } from "@/components/tools/PricingBadge";
 
@@ -11,7 +11,7 @@ export function DealCard({
   tool,
   categories = [],
 }: {
-  tool: Tool;
+  tool: DirectoryCard;
   categories?: DirectoryCategory[];
 }) {
   const [copied, setCopied] = useState(false);

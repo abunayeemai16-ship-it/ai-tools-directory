@@ -3,6 +3,9 @@
 import { usePathname } from "next/navigation";
 import { useEffect, useRef } from "react";
 
+/** Heartbeats only keep the "live visitor" count warm; pageviews already open sessions. */
+const HEARTBEAT_MS = 5 * 60_000;
+
 function sessionId() {
   const key = "forge_session_id";
   let id = sessionStorage.getItem(key);
@@ -41,6 +44,7 @@ async function ping(url: string, body: unknown) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
       signal: controller.signal,
+      keepalive: true,
     });
   } catch {
     // Compiling, slow DB, or aborted keepalive must not surface a Next overlay.
@@ -68,7 +72,7 @@ export function AnalyticsTracker() {
     };
 
     beat();
-    const timer = window.setInterval(beat, 15_000);
+    const timer = window.setInterval(beat, HEARTBEAT_MS);
     const onVisible = () => {
       if (document.visibilityState === "visible") beat();
     };

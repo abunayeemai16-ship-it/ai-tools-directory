@@ -936,7 +936,9 @@ export async function loadPublicDb(): Promise<{ db: Database; live: boolean }> {
  * Full review record and whether it came from Postgres. Throws when Postgres fails,
  * so a broken render is never cached.
  */
-export async function loadPublicTool(card: Tool): Promise<{ tool: Tool | undefined; live: boolean }> {
+type PublicToolCard = Pick<Tool, "slug" | "category" | "officialUrl" | "website">;
+
+export async function loadPublicTool(card: PublicToolCard): Promise<{ tool: Tool | undefined; live: boolean }> {
   if (!usesPostgres() || isBuildPhase()) return snapshotTool(card);
   const { loadCatalogTool } = await postgresStore();
   const { tool, ready } = await loadCatalogTool(card.slug);
@@ -944,7 +946,7 @@ export async function loadPublicTool(card: Tool): Promise<{ tool: Tool | undefin
   return { tool: liveTool(card, tool), live: true };
 }
 
-async function snapshotTool(card: Tool): Promise<{ tool: Tool | undefined; live: boolean }> {
+async function snapshotTool(card: PublicToolCard): Promise<{ tool: Tool | undefined; live: boolean }> {
   const db = usesPostgres() ? emptyDb() : await ensureMemory();
   const tool = db.tools.find((item) => item.slug === card.slug);
   return { tool: tool && isPublished(tool) ? tool : undefined, live: !usesPostgres() };
@@ -961,7 +963,7 @@ export async function getRedirectTool(slug: string): Promise<Tool | undefined> {
   return entry ? expandCatalogEntry(entry, { status: "published" }) : undefined;
 }
 
-function liveTool(card: Tool, raw: Tool | null): Tool | undefined {
+function liveTool(card: PublicToolCard, raw: Tool | null): Tool | undefined {
   if (raw) {
     if (!isPublished(raw)) return undefined;
     const tool = normalizeTool(raw);

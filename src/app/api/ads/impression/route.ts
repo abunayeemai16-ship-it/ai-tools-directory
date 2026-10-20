@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { after, NextResponse } from "next/server";
 import { recordAdImpressions } from "@/lib/db";
 
 export async function POST(request: Request) {
@@ -11,7 +11,13 @@ export async function POST(request: Request) {
   const ids = [
     ...(Array.isArray(body.ids) ? body.ids : []),
     ...(body.id ? [body.id] : []),
-  ];
-  const recorded = await recordAdImpressions(ids);
-  return NextResponse.json({ ok: true, recorded });
+  ].filter(Boolean);
+  if (!ids.length) return new NextResponse(null, { status: 204 });
+
+  after(() =>
+    recordAdImpressions(ids).catch((error) =>
+      console.error("[forge] impression write failed", error),
+    ),
+  );
+  return new NextResponse(null, { status: 204 });
 }

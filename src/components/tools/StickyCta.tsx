@@ -3,10 +3,10 @@
 import { AdImpression } from "@/components/ads/AdImpression";
 import { PartnerSidebar } from "@/components/ads/PartnerSidebar";
 import { AffiliateButton } from "@/components/tools/AffiliateButton";
-import type { AdCampaign, Tool } from "@/lib/types";
+import type { AdCampaign, DirectoryCard } from "@/lib/types";
 import { ToolLogo } from "@/components/tools/ToolLogo";
 
-export function StickyCta({ tool, promos = [] }: { tool: Tool; promos?: AdCampaign[] }) {
+export function StickyCta({ tool, promos = [] }: { tool: DirectoryCard; promos?: AdCampaign[] }) {
   return (
     <>
       <AdImpression ids={promos.map((ad) => ad.id)} />

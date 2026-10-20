@@ -6,7 +6,7 @@ import { AdImpression } from "@/components/ads/AdImpression";
 import { PartnerBanner } from "@/components/ads/PartnerBanner";
 import { ToolCard } from "@/components/tools/ToolCard";
 import { categoryLabel } from "@/lib/categories";
-import type { AdCampaign, DirectoryCategory, Tool } from "@/lib/types";
+import type { AdCampaign, DirectoryCard, DirectoryCategory } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const COMPACT_COUNT = 7;
@@ -19,7 +19,7 @@ export function DirectoryExplorer({
   categories,
   ads = [],
 }: {
-  tools: Tool[];
+  tools: DirectoryCard[];
   categories: DirectoryCategory[];
   ads?: AdCampaign[];
 }) {
