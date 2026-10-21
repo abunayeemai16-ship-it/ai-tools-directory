@@ -834,6 +834,61 @@ export async function listClearedDealSlugs(): Promise<string[]> {
   }
 }
 
+function toolHasDealFields(tool: {
+  couponCode?: string;
+  dealText?: string;
+  couponDiscount?: string;
+}) {
+  return Boolean(tool.couponCode || tool.dealText || tool.couponDiscount);
+}
+
+function stripToolDealFields<T extends Tool>(tool: T): T {
+  return {
+    ...tool,
+    couponCode: "",
+    dealText: "",
+    couponDiscount: "",
+    couponExpires: "",
+  };
+}
+
+/**
+ * Same deal visibility as /deals: tombstoned coupons are blanked for admin UI,
+ * and the catalog is healed in the background so fields stay empty after refresh.
+ */
+export async function alignToolsWithClearedDeals<T extends Tool>(tools: T[]): Promise<T[]> {
+  const cleared = new Set(await listClearedDealSlugs());
+  // Also treat "no coupon on the public projection" as cleared — /deals already hid them.
+  let publicWithoutDeal = new Set<string>();
+  try {
+    const { db: publicDb } = await loadPublicDb();
+    publicWithoutDeal = new Set(
+      publicDb.tools
+        .filter((tool) => !toolHasDealFields(tool))
+        .map((tool) => tool.slug),
+    );
+  } catch {
+    /* public projection optional during build */
+  }
+
+  const heal: string[] = [];
+  const synced = tools.map((tool) => {
+    const shouldClear =
+      toolHasDealFields(tool) &&
+      (cleared.has(tool.slug) || publicWithoutDeal.has(tool.slug));
+    if (!shouldClear) return tool;
+    heal.push(tool.slug);
+    return stripToolDealFields(tool);
+  });
+
+  for (const slug of [...new Set(heal)]) {
+    // Fire-and-forget heal; UI already shows empty coupon fields.
+    void clearToolDeal(slug).catch(() => undefined);
+  }
+
+  return synced;
+}
+
 async function ensureMemory() {
   if (process.env.VERCEL && !usesPostgres() && !vercelPersistWarned) {
     vercelPersistWarned = true;

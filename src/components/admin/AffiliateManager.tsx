@@ -533,18 +533,20 @@ export function AffiliateManager({ initial }: { initial?: Payload }) {
                     />
                     <input
                       value={tool.couponCode ?? ""}
-                      placeholder="FORGE20"
+                      placeholder="Coupon code"
                       onChange={(event) =>
                         patchLocalDeal(tool.slug, { couponCode: event.target.value })
                       }
                       onBlur={(event) =>
                         void saveInline(tool, { couponCode: event.target.value })
                       }
-                      className="mt-1 w-28 rounded-lg border border-line bg-ink px-2 py-1 font-mono text-xs text-accent"
+                      className={`mt-1 w-28 rounded-lg border border-line bg-ink px-2 py-1 font-mono text-xs ${
+                        tool.couponCode ? "text-accent" : "text-muted"
+                      }`}
                     />
                     <input
                       value={tool.dealText || tool.couponDiscount || ""}
-                      placeholder="20% OFF with code FORGE20"
+                      placeholder="Deal text"
                       onChange={(event) =>
                         patchLocalDeal(tool.slug, {
                           dealText: event.target.value,
